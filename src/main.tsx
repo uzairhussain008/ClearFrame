@@ -2,15 +2,21 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 
-// Dynamically set canonical and OpenGraph URL per applet-seo guidelines
+// Dynamically align canonical and OpenGraph URLs with the active origin
 const canonicalUrl = `${window.location.origin}${window.location.pathname}`;
-if (!document.querySelector('link[rel="canonical"]')) {
+const existingCanonical = document.querySelector('link[rel="canonical"]');
+if (existingCanonical) {
+  existingCanonical.setAttribute('href', canonicalUrl);
+} else {
   const link = document.createElement('link');
   link.rel = 'canonical';
   link.href = canonicalUrl;
   document.head.appendChild(link);
 }
-if (!document.querySelector('meta[property="og:url"]')) {
+const existingOgUrl = document.querySelector('meta[property="og:url"]');
+if (existingOgUrl) {
+  existingOgUrl.setAttribute('content', canonicalUrl);
+} else {
   const meta = document.createElement('meta');
   meta.setAttribute('property', 'og:url');
   meta.content = canonicalUrl;

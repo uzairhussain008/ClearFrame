@@ -377,6 +377,11 @@ async function startServer(): Promise<void> {
   );
   app.use(express.json({ limit: '2mb' }));
 
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    next();
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, maxUploadMb: MAX_VIDEO_SIZE_MB });
   });
@@ -398,8 +403,8 @@ async function startServer(): Promise<void> {
         'User-agent: *',
         'Allow: /',
         'Disallow: /api/',
+        '',
         `Sitemap: ${baseUrl}/sitemap.xml`,
-        `Agentmap: ${baseUrl}/.well-known/ard.json`,
       ].join('\n') + '\n'
     );
   });
@@ -421,16 +426,22 @@ async function startServer(): Promise<void> {
         '> ClearFrame is a free, zero-signup web video studio for removing watermarks and upscaling videos up to 4K UHD without external paid APIs or export watermarks.',
         '',
         '## Core Capabilities',
-        '- Maximum File Size: Up to 300 MB per video upload (100% free)',
+        '- Maximum File Size: Up to 300 MB per video upload (100% free, no account or credits)',
         '- Supported Input Formats: MP4, MOV, WebM, MKV, AVI, M4V',
         '- Watermark Removal Engines: Smart Inpaint (delogo), Soft Blur (boxblur), Mosaic Mask',
-        '- Multi-Region Selection: Up to 8 independent boxes with optional start/end timestamps',
-        '- Video Upscaling: Original, 1080p Full HD, 2K QHD, and 4K UHD (3840x2160), preserving aspect ratio without downscaling source footage',
-        '- Audio & Privacy: Original audio track preserved; temporary uploads auto-deleted after 30 minutes',
+        '- Multi-Region Selection: Up to 8 independent boxes with optional Start and End timestamps in seconds',
+        '- Video Upscaling: Original, 1080p Full HD, 2K QHD, and 4K UHD (3840x2160) via Lanczos resampling + Contrast Adaptive Sharpening, never downscaling higher-res footage',
+        '- Output & Audio: Visually lossless H.264 MP4 (CRF 17) with original audio track preserved and Before/After split slider comparison',
+        '- Privacy: Temporary uploads and exports are automatically deleted after 30 minutes or immediately on video reset',
+        '',
+        '## Direct Answers (AEO)',
+        '- **Is ClearFrame completely free up to 300 MB?** Yes, 100% free with no account, credits, or export watermark.',
+        '- **Does 4K upscaling reduce original quality?** No, it uses Lanczos resampling with Contrast Adaptive Sharpening and visually lossless H.264 encoding (CRF 17).',
+        '- **Which watermark removal engine should I use?** Smart Inpaint for corner logos and static text; Soft Blur or Mosaic for moving or complex textured backgrounds.',
         '',
         '## Pages & Discovery',
         `- [ClearFrame Workspace](${baseUrl}/#workspace): Upload videos up to 300 MB, mark watermark regions, and export clean MP4.`,
-        `- [How It Works](${baseUrl}/#how-it-works): Step-by-step guide to watermark removal and 4K upscaling.`,
+        `- [How It Works](${baseUrl}/#how-it-works): 3-step guide to watermark removal and 4K upscaling.`,
         `- [Supported Formats & Specs](${baseUrl}/#specs): Input limits, removal engines, and upscale targets.`,
         `- [Frequently Asked Questions](${baseUrl}/#faq): Answers on free 300 MB limits, 4K quality, and privacy.`,
         `- [XML Sitemap](${baseUrl}/sitemap.xml): Search engine sitemap for ClearFrame.`,
@@ -946,9 +957,42 @@ async function startServer(): Promise<void> {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+    app.use((req, res, next) => {
+      if ((req.method === 'GET' || req.method === 'HEAD') && (req.path === '/' || req.path === '/index.html')) {
+        const baseUrl = getBaseUrl(req);
+        res.setHeader('Link', `<${baseUrl}/.well-known/ard.json>; rel="ard"`);
+        res.setHeader('X-Robots-Tag', 'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1');
+      }
+      next();
+    });
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
+    const indexHtmlPath = path.join(distDir, 'index.html');
+    const cachedIndexHtml = fs.existsSync(indexHtmlPath)
+      ? fs.readFileSync(indexHtmlPath, 'utf-8')
+      : '';
+
+    const sendLocalizedIndexHtml = (req: express.Request, res: express.Response) => {
+      const baseUrl = getBaseUrl(req);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Link', `<${baseUrl}/.well-known/ard.json>; rel="ard"`);
+      res.setHeader(
+        'X-Robots-Tag',
+        'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1'
+      );
+      if (cachedIndexHtml) {
+        res
+          .type('text/html; charset=utf-8')
+          .send(cachedIndexHtml.replaceAll('https://clearframe.ai.studio', baseUrl));
+      } else {
+        res.sendFile(indexHtmlPath);
+      }
+    };
+
+    app.get('/', sendLocalizedIndexHtml);
+    app.get('/index.html', sendLocalizedIndexHtml);
+
     app.use(
       '/assets',
       express.static(path.join(distDir, 'assets'), {
@@ -959,17 +1003,10 @@ async function startServer(): Promise<void> {
     app.use(
       express.static(distDir, {
         maxAge: '1d',
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith('.html')) {
-            res.setHeader('Cache-Control', 'no-cache');
-          }
-        },
+        index: false,
       })
     );
-    app.get('*', (_req, res) => {
-      res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(path.join(distDir, 'index.html'));
-    });
+    app.get('*', sendLocalizedIndexHtml);
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {

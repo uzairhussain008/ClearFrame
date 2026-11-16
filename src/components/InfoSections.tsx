@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { ChevronDown } from 'lucide-react';
 import { ClearFrameLogo } from './ClearFrameLogo';
 
@@ -38,7 +38,7 @@ const FAQS = [
   },
   {
     q: 'Does upscaling to 4K degrade the original video quality?',
-    a: 'No. ClearFrame uses high-precision Lanczos resampling with Contrast Adaptive Sharpening and visually lossless encoding (CRF 16), and never downscales if your source is already 4K or higher.',
+    a: 'No. ClearFrame uses high-precision Lanczos resampling with Contrast Adaptive Sharpening and visually lossless H.264 MP4 encoding (CRF 17), and never downscales if your source is already 4K or higher.',
   },
   {
     q: 'Which watermark removal method works best?',
@@ -55,13 +55,14 @@ const FAQS = [
 ];
 
 export const InfoSections: React.FC = () => {
-  const [openFaq, setOpenFaq] = useState<number | null>(0);
-
   return (
     <div className="space-y-16 border-t border-slate-800/80 pt-14">
       {/* Minimal Breathable 3-Step Flow */}
-      <section id="how-it-works" className="cv-auto scroll-mt-8">
-        <h2 className="font-display text-2xl font-bold tracking-tight text-slate-50">
+      <section id="how-it-works" aria-labelledby="how-it-works-heading" className="cv-auto scroll-mt-8">
+        <h2
+          id="how-it-works-heading"
+          className="font-display text-2xl font-bold tracking-tight text-slate-50"
+        >
           How it works
         </h2>
         <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
@@ -85,8 +86,11 @@ export const InfoSections: React.FC = () => {
       </section>
 
       {/* Clean Minimal Specs */}
-      <section id="specs" className="cv-auto scroll-mt-8">
-        <h2 className="font-display text-2xl font-bold tracking-tight text-slate-50">
+      <section id="specs" aria-labelledby="specs-heading" className="cv-auto scroll-mt-8">
+        <h2
+          id="specs-heading"
+          className="font-display text-2xl font-bold tracking-tight text-slate-50"
+        >
           Supported formats &amp; limits
         </h2>
         <div className="mt-6 overflow-hidden rounded-xl border border-slate-800 bg-[#111A2E]">
@@ -106,38 +110,29 @@ export const InfoSections: React.FC = () => {
         </div>
       </section>
 
-      {/* AEO / GEO-Structured FAQ */}
-      <section id="faq" className="cv-auto scroll-mt-8">
-        <h2 className="font-display text-2xl font-bold tracking-tight text-slate-50">
+      {/* AEO / GEO-Structured FAQ: native details keeps all answers crawlable in DOM */}
+      <section id="faq" aria-labelledby="faq-heading" className="cv-auto scroll-mt-8">
+        <h2
+          id="faq-heading"
+          className="font-display text-2xl font-bold tracking-tight text-slate-50"
+        >
           Frequently asked questions
         </h2>
         <div className="mt-6 divide-y divide-slate-800 overflow-hidden rounded-xl border border-slate-800 bg-[#111A2E]">
-          {FAQS.map((item, idx) => {
-            const isOpen = openFaq === idx;
-            return (
-              <div key={item.q}>
-                <button
-                  type="button"
-                  aria-expanded={isOpen}
-                  onClick={() => setOpenFaq(isOpen ? null : idx)}
-                  className="flex w-full min-h-[52px] items-center justify-between gap-4 px-6 py-4 text-left text-sm font-semibold text-slate-100 hover:bg-slate-800/40 cursor-pointer"
-                >
-                  <span>{item.q}</span>
-                  <ChevronDown
-                    className={`h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 ${
-                      isOpen ? 'rotate-180' : ''
-                    }`}
-                    aria-hidden="true"
-                  />
-                </button>
-                {isOpen && (
-                  <div className="px-6 pb-5 text-sm leading-relaxed text-slate-400">
-                    {item.a}
-                  </div>
-                )}
+          {FAQS.map((item, idx) => (
+            <details key={item.q} open={idx === 0} className="group">
+              <summary className="flex w-full min-h-[52px] list-none items-center justify-between gap-4 px-6 py-4 text-left text-sm font-semibold text-slate-100 hover:bg-slate-800/40 cursor-pointer [&::-webkit-details-marker]:hidden">
+                <span>{item.q}</span>
+                <ChevronDown
+                  className="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 group-open:rotate-180"
+                  aria-hidden="true"
+                />
+              </summary>
+              <div className="px-6 pb-5 text-sm leading-relaxed text-slate-300">
+                {item.a}
               </div>
-            );
-          })}
+            </details>
+          ))}
         </div>
       </section>
     </div>
@@ -152,30 +147,30 @@ export const Footer: React.FC = () => {
           <a
             href="#workspace"
             aria-label="ClearFrame Top"
-            className="inline-block rounded focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-600"
+            className="inline-flex min-h-[44px] items-center rounded focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-600"
           >
             <ClearFrameLogo variant="light" size="md" />
           </a>
-          <p className="text-xs text-slate-600">
+          <p className="text-sm text-slate-600">
             Free 4K video watermark remover &amp; upscaler · Up to 300 MB · No external APIs
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-6 text-xs font-medium text-slate-600">
-          <a href="#workspace" className="hover:text-slate-950 transition-colors whitespace-nowrap">
+        <nav aria-label="Footer navigation" className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm font-medium text-slate-700">
+          <a href="#workspace" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             Workspace
           </a>
-          <a href="#how-it-works" className="hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="#how-it-works" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             How It Works
           </a>
-          <a href="#specs" className="hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="#specs" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             Specs
           </a>
-          <a href="#faq" className="hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="#faq" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             FAQ
           </a>
-          <span className="text-slate-500 whitespace-nowrap">© 2026 ClearFrame</span>
-        </div>
+          <span className="inline-flex min-h-[44px] items-center text-slate-500 whitespace-nowrap">© 2026 ClearFrame</span>
+        </nav>
       </div>
     </footer>
   );
