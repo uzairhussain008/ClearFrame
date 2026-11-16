@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -360,6 +361,16 @@ const upload = multer({
 
 async function startServer(): Promise<void> {
   const app = express();
+  app.use(
+    compression({
+      filter: (req, res) => {
+        if (req.path.endsWith('/stream') || req.path.endsWith('/download')) {
+          return false;
+        }
+        return compression.filter(req, res);
+      },
+    })
+  );
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -869,8 +880,25 @@ async function startServer(): Promise<void> {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
+    app.use(
+      '/assets',
+      express.static(path.join(distDir, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+      })
+    );
+    app.use(
+      express.static(distDir, {
+        maxAge: '1d',
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }

@@ -24,3 +24,8 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 360px;
+}

@@ -1,9 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Header } from './components/Header';
 import { UploadDropzone } from './components/UploadDropzone';
-import { WatermarkEditor } from './components/WatermarkEditor';
-import { ComparisonResult } from './components/ComparisonResult';
 import { Footer, InfoSections } from './components/InfoSections';
+
+const WatermarkEditor = lazy(() =>
+  import('./components/WatermarkEditor').then((m) => ({ default: m.WatermarkEditor }))
+);
+const ComparisonResult = lazy(() =>
+  import('./components/ComparisonResult').then((m) => ({ default: m.ComparisonResult }))
+);
 import {
   clampRegion,
   validateVideoFile,
@@ -430,36 +435,52 @@ export default function App() {
             )}
 
             {video && !isCompleted && (
-              <WatermarkEditor
-                video={video}
-                regions={regions}
-                mode={mode}
-                upscale={upscale}
-                detailEnhance={detailEnhance}
-                isProcessing={isProcessing}
-                processProgress={job?.progress ?? 0}
-                processError={processError}
-                onRegionsChange={setRegions}
-                onModeChange={setMode}
-                onUpscaleChange={setUpscale}
-                onDetailEnhanceChange={setDetailEnhance}
-                onStartProcessing={handleStartProcessing}
-                onChangeVideo={handleResetWorkspace}
-              />
+              <Suspense
+                fallback={
+                  <div className="rounded-xl border border-slate-800 bg-[#111A2E] px-6 py-16 text-center text-sm text-slate-300">
+                    Loading video workspace...
+                  </div>
+                }
+              >
+                <WatermarkEditor
+                  video={video}
+                  regions={regions}
+                  mode={mode}
+                  upscale={upscale}
+                  detailEnhance={detailEnhance}
+                  isProcessing={isProcessing}
+                  processProgress={job?.progress ?? 0}
+                  processError={processError}
+                  onRegionsChange={setRegions}
+                  onModeChange={setMode}
+                  onUpscaleChange={setUpscale}
+                  onDetailEnhanceChange={setDetailEnhance}
+                  onStartProcessing={handleStartProcessing}
+                  onChangeVideo={handleResetWorkspace}
+                />
+              </Suspense>
             )}
 
             {video && isCompleted && job && (
-              <ComparisonResult
-                video={video}
-                job={job}
-                regionsCount={regions.length}
-                onEditRegions={() => {
-                  setJob(null);
-                  setJobId(null);
-                  setProcessError(null);
-                }}
-                onReset={handleResetWorkspace}
-              />
+              <Suspense
+                fallback={
+                  <div className="rounded-xl border border-slate-800 bg-[#111A2E] px-6 py-16 text-center text-sm text-slate-300">
+                    Loading comparison view...
+                  </div>
+                }
+              >
+                <ComparisonResult
+                  video={video}
+                  job={job}
+                  regionsCount={regions.length}
+                  onEditRegions={() => {
+                    setJob(null);
+                    setJobId(null);
+                    setProcessError(null);
+                  }}
+                  onReset={handleResetWorkspace}
+                />
+              </Suspense>
             )}
           </div>
         </section>

@@ -7,7 +7,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ onUploadClick }) => {
   return (
-    <header className="border-b border-slate-800/80 bg-[#0B1120]/95 backdrop-blur-sm">
+    <header className="border-b border-slate-800/80 bg-[#0B1120]">
       <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-8 px-4 py-4 sm:px-6">
         <a
           href="#workspace"

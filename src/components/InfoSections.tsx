@@ -60,7 +60,7 @@ export const InfoSections: React.FC = () => {
   return (
     <div className="space-y-16 border-t border-slate-800/80 pt-14">
       {/* Minimal Breathable 3-Step Flow */}
-      <section id="how-it-works" className="scroll-mt-8">
+      <section id="how-it-works" className="cv-auto scroll-mt-8">
         <h2 className="font-display text-2xl font-bold tracking-tight text-slate-50">
           How it works
         </h2>
@@ -85,7 +85,7 @@ export const InfoSections: React.FC = () => {
       </section>
 
       {/* Clean Minimal Specs */}
-      <section id="specs" className="scroll-mt-8">
+      <section id="specs" className="cv-auto scroll-mt-8">
         <h2 className="font-display text-2xl font-bold tracking-tight text-slate-50">
           Supported formats &amp; limits
         </h2>
@@ -107,7 +107,7 @@ export const InfoSections: React.FC = () => {
       </section>
 
       {/* AEO / GEO-Structured FAQ */}
-      <section id="faq" className="scroll-mt-8">
+      <section id="faq" className="cv-auto scroll-mt-8">
         <h2 className="font-display text-2xl font-bold tracking-tight text-slate-50">
           Frequently asked questions
         </h2>
@@ -146,7 +146,7 @@ export const InfoSections: React.FC = () => {
 
 export const Footer: React.FC = () => {
   return (
-    <footer className="mt-20 border-t border-slate-200 bg-white text-slate-950">
+    <footer className="cv-auto mt-20 border-t border-slate-200 bg-white text-slate-950">
       <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="space-y-1.5">
           <a
