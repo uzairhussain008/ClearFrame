@@ -310,18 +310,35 @@ export function buildFfmpegFilterGraph(
 
   const finalLabel = 'vout';
   if (targetDims.upscaled) {
-    const scaleStep = `scale=${targetDims.width}:${targetDims.height}:flags=lanczos+accurate_rnd+full_chroma_int`;
-    const filterChain = detailEnhance ? `${scaleStep},cas=strength=0.3` : scaleStep;
+    const scaleStep = `scale=${targetDims.width}:${targetDims.height}:flags=lanczos`;
+    const filterChain = detailEnhance ? `${scaleStep},unsharp=3:3:0.35` : scaleStep;
     steps.push(`[${currentLabel}]${filterChain}[${finalLabel}]`);
-  } else {
+    return {
+      filterComplex: steps.join(';'),
+      outputLabel: `[${finalLabel}]`,
+      outputWidth: targetDims.width,
+      outputHeight: targetDims.height,
+      upscaled: true,
+    };
+  }
+
+  const needsEvenCrop = videoWidth % 2 !== 0 || videoHeight % 2 !== 0;
+  if (needsEvenCrop) {
     steps.push(`[${currentLabel}]scale=trunc(iw/2)*2:trunc(ih/2)*2[${finalLabel}]`);
+    return {
+      filterComplex: steps.join(';'),
+      outputLabel: `[${finalLabel}]`,
+      outputWidth: targetDims.width,
+      outputHeight: targetDims.height,
+      upscaled: false,
+    };
   }
 
   return {
     filterComplex: steps.join(';'),
-    outputLabel: `[${finalLabel}]`,
+    outputLabel: `[${currentLabel}]`,
     outputWidth: targetDims.width,
     outputHeight: targetDims.height,
-    upscaled: targetDims.upscaled,
+    upscaled: false,
   };
 }

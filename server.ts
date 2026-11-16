@@ -82,6 +82,7 @@ interface StoredVideo {
   duration: number;
   fps: number;
   hasAudio: boolean;
+  audioCodec?: string;
   createdAt: number;
   isSample?: boolean;
 }
@@ -144,6 +145,7 @@ async function probeVideo(filePath: string): Promise<{
   duration: number;
   fps: number;
   hasAudio: boolean;
+  audioCodec?: string;
 }> {
   const { stdout } = await runProcess(FFPROBE_BIN, [
     '-v',
@@ -158,6 +160,7 @@ async function probeVideo(filePath: string): Promise<{
   const parsed = JSON.parse(stdout) as {
     streams?: Array<{
       codec_type?: string;
+      codec_name?: string;
       width?: number;
       height?: number;
       r_frame_rate?: string;
@@ -189,6 +192,7 @@ async function probeVideo(filePath: string): Promise<{
     duration,
     fps,
     hasAudio: Boolean(audioStream),
+    audioCodec: audioStream?.codec_name?.toLowerCase(),
   };
 }
 
@@ -377,38 +381,93 @@ async function startServer(): Promise<void> {
     res.json({ ok: true, maxUploadMb: MAX_VIDEO_SIZE_MB });
   });
 
+  function getBaseUrl(req: express.Request): string {
+    const rawHost = (req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+    if (rawHost) {
+      const rawProto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
+      const proto = rawHost.startsWith('localhost') || rawHost.startsWith('127.') ? 'http' : rawProto || 'https';
+      return `${proto}://${rawHost}`.replace(/\/$/, '');
+    }
+    return (process.env.APP_URL || 'https://clearframe.ai.studio').replace(/\/$/, '');
+  }
+
   app.get('/robots.txt', (req, res) => {
-    const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    const baseUrl = getBaseUrl(req);
     res.type('text/plain').send(
-      `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${baseUrl.replace(/\/$/, '')}/sitemap.xml\n`
+      [
+        'User-agent: *',
+        'Allow: /',
+        'Disallow: /api/',
+        `Sitemap: ${baseUrl}/sitemap.xml`,
+        `Agentmap: ${baseUrl}/.well-known/ard.json`,
+      ].join('\n') + '\n'
     );
   });
 
   app.get('/sitemap.xml', (req, res) => {
-    const baseUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    const baseUrl = getBaseUrl(req);
     const today = new Date().toISOString().split('T')[0];
     res.type('application/xml').send(
       `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${baseUrl}/</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n</urlset>\n`
     );
   });
 
-  app.get('/llms.txt', (_req, res) => {
-    res.type('text/plain').send(
+  app.get('/llms.txt', (req, res) => {
+    const baseUrl = getBaseUrl(req);
+    res.type('text/markdown; charset=utf-8').send(
       [
         '# ClearFrame — Free Video Watermark Remover & 4K Upscaler',
         '',
-        '> ClearFrame is a free, zero-signup browser and server-local FFmpeg video studio for removing watermarks and upscaling videos up to 4K UHD without external paid APIs or export watermarks.',
+        '> ClearFrame is a free, zero-signup web video studio for removing watermarks and upscaling videos up to 4K UHD without external paid APIs or export watermarks.',
         '',
         '## Core Capabilities',
         '- Maximum File Size: Up to 300 MB per video upload (100% free)',
         '- Supported Input Formats: MP4, MOV, WebM, MKV, AVI, M4V',
         '- Watermark Removal Engines: Smart Inpaint (delogo), Soft Blur (boxblur), Mosaic Mask',
         '- Multi-Region Selection: Up to 8 independent boxes with optional start/end timestamps',
-        '- Video Upscaling: Original, 1080p Full HD, 2K QHD, and 4K UHD (3840x2160) via Lanczos resampling + Contrast Adaptive Sharpening (CAS), never downscaling source footage',
-        '- Audio & Privacy: Original audio track preserved (AAC 192 kbps); temporary uploads auto-deleted after 30 minutes',
-      ].join('\n')
+        '- Video Upscaling: Original, 1080p Full HD, 2K QHD, and 4K UHD (3840x2160), preserving aspect ratio without downscaling source footage',
+        '- Audio & Privacy: Original audio track preserved; temporary uploads auto-deleted after 30 minutes',
+        '',
+        '## Pages & Discovery',
+        `- [ClearFrame Workspace](${baseUrl}/#workspace): Upload videos up to 300 MB, mark watermark regions, and export clean MP4.`,
+        `- [How It Works](${baseUrl}/#how-it-works): Step-by-step guide to watermark removal and 4K upscaling.`,
+        `- [Supported Formats & Specs](${baseUrl}/#specs): Input limits, removal engines, and upscale targets.`,
+        `- [Frequently Asked Questions](${baseUrl}/#faq): Answers on free 300 MB limits, 4K quality, and privacy.`,
+        `- [XML Sitemap](${baseUrl}/sitemap.xml): Search engine sitemap for ClearFrame.`,
+        `- [Agentic Resource Discovery](${baseUrl}/.well-known/ard.json): ARD manifest for AI agents.`,
+      ].join('\n') + '\n'
     );
   });
+
+  const handleArdManifest = (req: express.Request, res: express.Response) => {
+    const baseUrl = getBaseUrl(req);
+    let publisherHost = 'clearframe.ai.studio';
+    try {
+      publisherHost = new URL(baseUrl).hostname.toLowerCase().replace(/[^a-z0-9.-]/g, '') || publisherHost;
+    } catch {
+      // Fallback to default host
+    }
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.json({
+      specVersion: '0.91',
+      entries: [
+        {
+          identifier: `urn:air:${publisherHost}:tool:clearframe-video-studio`,
+          displayName: 'ClearFrame Video Watermark Remover & 4K Upscaler',
+          type: 'text/markdown',
+          url: `${baseUrl}/llms.txt`,
+          representativeQueries: [
+            'remove watermark from video free up to 300mb',
+            'upscale video to 4k without losing quality',
+            'erase logo or text overlay from mp4 video',
+          ],
+        },
+      ],
+    });
+  };
+
+  app.get('/.well-known/ard.json', handleArdManifest);
+  app.get('/.well-known/ai-catalog.json', handleArdManifest);
 
   async function finalizeUploadedVideo(
     filePath: string,
@@ -427,6 +486,7 @@ async function startServer(): Promise<void> {
       duration: info.duration,
       fps: info.fps,
       hasAudio: info.hasAudio,
+      audioCodec: info.audioCodec,
       createdAt: Date.now(),
     };
     videos.set(videoId, stored);
@@ -749,6 +809,10 @@ async function startServer(): Promise<void> {
 
     const args = [
       '-y',
+      '-threads',
+      '0',
+      '-filter_threads',
+      '0',
       '-i',
       video.filePath,
       '-filter_complex',
@@ -758,16 +822,21 @@ async function startServer(): Promise<void> {
     ];
 
     if (video.hasAudio) {
-      args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '192k');
+      const canCopyAudio = video.audioCodec === 'aac' || video.audioCodec === 'mp3';
+      if (canCopyAudio) {
+        args.push('-map', '0:a?', '-c:a', 'copy');
+      } else {
+        args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '192k');
+      }
     }
 
     args.push(
       '-c:v',
       'libx264',
       '-preset',
-      'veryfast',
+      'superfast',
       '-crf',
-      upscaled ? '16' : '18',
+      upscaled ? '17' : '18',
       '-pix_fmt',
       'yuv420p',
       '-movflags',

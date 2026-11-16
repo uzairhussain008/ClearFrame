@@ -114,15 +114,14 @@ test('buildFfmpegFilterGraph generates valid delogo, blur, pixelate, and 4K upsc
     720,
     5
   );
-  assert.equal(delogo.outputLabel, '[vout]');
+  assert.equal(delogo.outputLabel, '[v_2]');
   assert.equal(delogo.outputWidth, 1280);
   assert.equal(delogo.outputHeight, 720);
   assert.match(delogo.filterComplex, /\[0:v\]delogo=x=900:y=610:w=320:h=64:show=0\[v_1\]/);
   assert.match(
     delogo.filterComplex,
-    /\[v_1\]delogo=x=40:y=40:w=120:h=40:show=0:enable='between\(t,1,3.5\)'\[v_2\]/
+    /\[v_1\]delogo=x=40:y=40:w=120:h=40:show=0:enable='between\(t,1,3.5\)'\[v_2\]$/
   );
-  assert.match(delogo.filterComplex, /scale=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2\[vout\]$/);
 
   const delogo4k = buildFfmpegFilterGraph(
     [{ id: 'a', label: 'R1', x: 900, y: 610, w: 320, h: 64 }],
@@ -137,7 +136,7 @@ test('buildFfmpegFilterGraph generates valid delogo, blur, pixelate, and 4K upsc
   assert.equal(delogo4k.upscaled, true);
   assert.match(
     delogo4k.filterComplex,
-    /scale=3840:2160:flags=lanczos\+accurate_rnd\+full_chroma_int,cas=strength=0\.3\[vout\]$/
+    /scale=3840:2160:flags=lanczos,unsharp=3:3:0\.35\[vout\]$/
   );
 
   // Upscale-only without watermark regions
@@ -147,7 +146,7 @@ test('buildFfmpegFilterGraph generates valid delogo, blur, pixelate, and 4K upsc
   });
   assert.equal(
     upscaleOnly.filterComplex,
-    '[0:v]scale=3840:2160:flags=lanczos+accurate_rnd+full_chroma_int[vout]'
+    '[0:v]scale=3840:2160:flags=lanczos[vout]'
   );
 
   // Requires at least a region or an upscale
