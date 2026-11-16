@@ -76,7 +76,10 @@ export default function App() {
     }
   };
 
-  const handleFileSelected = (file: File) => {
+  const activeUploadIdRef = useRef<string | null>(null);
+  const uploadCancelledRef = useRef(false);
+
+  const handleFileSelected = async (file: File) => {
     setUploadError(null);
     const check = validateVideoFile({
       name: file.name,
@@ -89,67 +92,192 @@ export default function App() {
       return;
     }
 
+    uploadCancelledRef.current = false;
+    activeUploadIdRef.current = null;
     setIsUploading(true);
     setUploadProgress(0);
     setUploadLoadedBytes(0);
     setUploadTotalBytes(file.size);
     setUploadFileName(file.name);
 
-    const formData = new FormData();
-    formData.append('video', file);
+    const CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
-    const xhr = new XMLHttpRequest();
-    activeXhrRef.current = xhr;
+    if (file.size <= CHUNK_THRESHOLD_BYTES) {
+      const formData = new FormData();
+      formData.append('video', file);
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        setUploadLoadedBytes(event.loaded);
-        setUploadTotalBytes(event.total);
-        setUploadProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
-      }
-    };
+      const xhr = new XMLHttpRequest();
+      activeXhrRef.current = xhr;
 
-    xhr.onload = () => {
-      activeXhrRef.current = null;
-      setIsUploading(false);
-
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const parsed = JSON.parse(xhr.responseText) as VideoMetadata;
-          setUploadProgress(100);
-          initializeVideoWorkspace(parsed);
-        } catch {
-          setUploadError('Received an unexpected server response.');
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          setUploadLoadedBytes(event.loaded);
+          setUploadTotalBytes(event.total);
+          setUploadProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
         }
-      } else {
-        try {
-          const errPayload = JSON.parse(xhr.responseText) as { error?: string };
-          setUploadError(errPayload.error ?? 'Failed to upload video.');
-        } catch {
-          setUploadError('Failed to upload video. Please try again.');
+      };
+
+      xhr.onload = () => {
+        activeXhrRef.current = null;
+        setIsUploading(false);
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const parsed = JSON.parse(xhr.responseText) as VideoMetadata;
+            setUploadProgress(100);
+            initializeVideoWorkspace(parsed);
+          } catch {
+            setUploadError('Received an unexpected server response.');
+          }
+        } else {
+          try {
+            const errPayload = JSON.parse(xhr.responseText) as { error?: string };
+            setUploadError(errPayload.error ?? 'Failed to upload video.');
+          } catch {
+            setUploadError('Failed to upload video. Please try again.');
+          }
         }
+      };
+
+      xhr.onerror = () => {
+        activeXhrRef.current = null;
+        setIsUploading(false);
+        setUploadError('Network error while uploading. Please try again.');
+      };
+
+      xhr.onabort = () => {
+        activeXhrRef.current = null;
+        setIsUploading(false);
+      };
+
+      xhr.open('POST', '/api/upload');
+      xhr.send(formData);
+      return;
+    }
+
+    try {
+      const initRes = await fetch('/api/upload/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          size: file.size,
+          type: file.type,
+        }),
+      });
+      const initData = (await initRes.json()) as {
+        uploadId?: string;
+        chunkSize?: number;
+        error?: string;
+      };
+      if (!initRes.ok || !initData.uploadId) {
+        throw new Error(initData.error || 'Could not initialize video upload.');
       }
-    };
 
-    xhr.onerror = () => {
-      activeXhrRef.current = null;
+      const uploadId = initData.uploadId;
+      activeUploadIdRef.current = uploadId;
+      const chunkSize = initData.chunkSize || CHUNK_THRESHOLD_BYTES;
+
+      let offset = 0;
+      let chunkIndex = 0;
+      while (offset < file.size) {
+        if (uploadCancelledRef.current) {
+          return;
+        }
+        const end = Math.min(file.size, offset + chunkSize);
+        const slice = file.slice(offset, end);
+        const chunkOffset = offset;
+
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          activeXhrRef.current = xhr;
+
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const totalLoaded = Math.min(file.size, chunkOffset + event.loaded);
+              setUploadLoadedBytes(totalLoaded);
+              setUploadProgress(Math.min(99, Math.round((totalLoaded / file.size) * 100)));
+            }
+          };
+
+          xhr.onload = () => {
+            activeXhrRef.current = null;
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve();
+            } else {
+              try {
+                const errPayload = JSON.parse(xhr.responseText) as { error?: string };
+                reject(new Error(errPayload.error || `Chunk ${chunkIndex + 1} upload failed.`));
+              } catch {
+                reject(new Error(`Upload failed (HTTP ${xhr.status}).`));
+              }
+            }
+          };
+
+          xhr.onerror = () => {
+            activeXhrRef.current = null;
+            reject(new Error('Network error while uploading video chunk.'));
+          };
+
+          xhr.onabort = () => {
+            activeXhrRef.current = null;
+            reject(new Error('__ABORTED__'));
+          };
+
+          xhr.open('POST', `/api/upload/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${chunkIndex}`);
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.send(slice);
+        });
+
+        offset = end;
+        chunkIndex += 1;
+        setUploadLoadedBytes(offset);
+        setUploadProgress(Math.min(99, Math.round((offset / file.size) * 100)));
+      }
+
+      if (uploadCancelledRef.current) {
+        return;
+      }
+
+      const completeRes = await fetch('/api/upload/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId }),
+      });
+      const completeData = (await completeRes.json()) as VideoMetadata & { error?: string };
+      if (!completeRes.ok) {
+        throw new Error(completeData.error || 'Failed to finalize uploaded video.');
+      }
+
+      activeUploadIdRef.current = null;
+      setUploadProgress(100);
       setIsUploading(false);
-      setUploadError('Network error while uploading. Please try again.');
-    };
-
-    xhr.onabort = () => {
+      initializeVideoWorkspace(completeData);
+    } catch (err) {
       activeXhrRef.current = null;
+      const uploadIdToDelete = activeUploadIdRef.current;
+      activeUploadIdRef.current = null;
+      if (uploadIdToDelete) {
+        fetch(`/api/upload/${uploadIdToDelete}`, { method: 'DELETE' }).catch(() => {});
+      }
       setIsUploading(false);
-    };
-
-    xhr.open('POST', '/api/upload');
-    xhr.send(formData);
+      if (err instanceof Error && err.message === '__ABORTED__') {
+        return;
+      }
+      setUploadError(err instanceof Error ? err.message : 'Failed to upload video.');
+    }
   };
 
   const handleCancelUpload = () => {
+    uploadCancelledRef.current = true;
     if (activeXhrRef.current) {
       activeXhrRef.current.abort();
       activeXhrRef.current = null;
+    }
+    if (activeUploadIdRef.current) {
+      const id = activeUploadIdRef.current;
+      activeUploadIdRef.current = null;
+      fetch(`/api/upload/${id}`, { method: 'DELETE' }).catch(() => {});
     }
     setIsUploading(false);
     setUploadProgress(0);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   MAX_VIDEO_SIZE_BYTES,
   MAX_VIDEO_SIZE_MB,
@@ -24,6 +25,47 @@ const OUTPUT_DIR = path.join(WORK_DIR, 'outputs');
 const SAMPLE_DIR = path.join(WORK_DIR, 'sample');
 const SAMPLE_PATH = path.join(SAMPLE_DIR, 'sample-watermarked.mp4');
 const FONT_PATH = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf';
+
+const require = createRequire(import.meta.url);
+
+function resolveExecutable(envOverride: string | undefined, bundledPath: string | null | undefined, fallbackName: string): string {
+  const candidates = [envOverride, bundledPath].filter((v): v is string => Boolean(v && v.trim()));
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+      } catch {
+        try {
+          fs.chmodSync(candidate, 0o755);
+        } catch {
+          // Ignore chmod failures on read-only filesystems
+        }
+      }
+      return candidate;
+    }
+  }
+  return fallbackName;
+}
+
+const FFMPEG_STATIC_PATH = (() => {
+  try {
+    return require('ffmpeg-static') as string | null;
+  } catch {
+    return null;
+  }
+})();
+
+const FFPROBE_STATIC_PATH = (() => {
+  try {
+    const mod = require('ffprobe-static') as { path?: string } | undefined;
+    return mod?.path ?? null;
+  } catch {
+    return null;
+  }
+})();
+
+const FFMPEG_BIN = resolveExecutable(process.env.FFMPEG_PATH, FFMPEG_STATIC_PATH, 'ffmpeg');
+const FFPROBE_BIN = resolveExecutable(process.env.FFPROBE_PATH, FFPROBE_STATIC_PATH, 'ffprobe');
 
 for (const dir of [WORK_DIR, UPLOAD_DIR, OUTPUT_DIR, SAMPLE_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -60,8 +102,18 @@ interface JobRecord {
   finishedAt?: number;
 }
 
+interface ChunkUploadSession {
+  uploadId: string;
+  originalName: string;
+  filePath: string;
+  expectedSize: number;
+  receivedBytes: number;
+  createdAt: number;
+}
+
 const videos = new Map<string, StoredVideo>();
 const jobs = new Map<string, JobRecord>();
+const uploadSessions = new Map<string, ChunkUploadSession>();
 
 function runProcess(bin: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -92,7 +144,7 @@ async function probeVideo(filePath: string): Promise<{
   fps: number;
   hasAudio: boolean;
 }> {
-  const { stdout } = await runProcess('ffprobe', [
+  const { stdout } = await runProcess(FFPROBE_BIN, [
     '-v',
     'quiet',
     '-print_format',
@@ -169,7 +221,7 @@ async function ensureSampleVideo(): Promise<void> {
       );
     }
 
-    await runProcess('ffmpeg', [
+    await runProcess(FFMPEG_BIN, [
       '-y',
       '-f',
       'lavfi',
@@ -268,6 +320,14 @@ function cleanupExpiredFiles(): void {
       jobs.delete(jobId);
     }
   }
+  for (const [uploadId, session] of uploadSessions.entries()) {
+    if (session.createdAt < cutoff) {
+      if (fs.existsSync(session.filePath)) {
+        fs.unlink(session.filePath, () => {});
+      }
+      uploadSessions.delete(uploadId);
+    }
+  }
 }
 
 setInterval(cleanupExpiredFiles, 5 * 60 * 1000).unref();
@@ -339,6 +399,173 @@ async function startServer(): Promise<void> {
     );
   });
 
+  async function finalizeUploadedVideo(
+    filePath: string,
+    originalName: string,
+    size: number
+  ): Promise<VideoMetadata> {
+    const info = await probeVideo(filePath);
+    const videoId = crypto.randomUUID();
+    const stored: StoredVideo = {
+      videoId,
+      originalName,
+      filePath,
+      size,
+      width: info.width,
+      height: info.height,
+      duration: info.duration,
+      fps: info.fps,
+      hasAudio: info.hasAudio,
+      createdAt: Date.now(),
+    };
+    videos.set(videoId, stored);
+
+    return {
+      videoId,
+      originalName: stored.originalName,
+      size: stored.size,
+      width: stored.width,
+      height: stored.height,
+      duration: stored.duration,
+      fps: stored.fps,
+      hasAudio: stored.hasAudio,
+      previewUrl: `/api/videos/${videoId}/stream`,
+    };
+  }
+
+  app.post('/api/upload/init', (req, res) => {
+    const { filename, size, type } = (req.body ?? {}) as {
+      filename?: string;
+      size?: number;
+      type?: string;
+    };
+
+    if (!filename || typeof filename !== 'string') {
+      res.status(400).json({ error: 'Missing file name.' });
+      return;
+    }
+
+    const totalSize = Number(size);
+    if (!Number.isFinite(totalSize) || totalSize <= 0) {
+      res.status(400).json({ error: 'Invalid video file size.' });
+      return;
+    }
+
+    if (totalSize > MAX_VIDEO_SIZE_BYTES) {
+      res.status(413).json({
+        error: `File exceeds the ${MAX_VIDEO_SIZE_MB} MB maximum size limit.`,
+      });
+      return;
+    }
+
+    const ext = getFileExtension(filename);
+    const extOk = (SUPPORTED_VIDEO_EXTENSIONS as readonly string[]).includes(ext);
+    const mimeOk = Boolean(type && type.startsWith('video/'));
+    if (!extOk && !mimeOk) {
+      res.status(400).json({
+        error: 'Unsupported video format. Please upload MP4, MOV, WebM, MKV, AVI, or M4V.',
+      });
+      return;
+    }
+
+    const uploadId = crypto.randomUUID();
+    const safeExt = ext || '.mp4';
+    const filePath = path.join(UPLOAD_DIR, `${uploadId}${safeExt}`);
+    fs.writeFileSync(filePath, Buffer.alloc(0));
+
+    uploadSessions.set(uploadId, {
+      uploadId,
+      originalName: filename,
+      filePath,
+      expectedSize: totalSize,
+      receivedBytes: 0,
+      createdAt: Date.now(),
+    });
+
+    res.json({
+      uploadId,
+      chunkSize: 8 * 1024 * 1024,
+    });
+  });
+
+  app.post(
+    '/api/upload/chunk',
+    express.raw({ type: 'application/octet-stream', limit: '16mb' }),
+    async (req, res) => {
+      const uploadId = String(req.query.uploadId ?? '');
+      const session = uploadSessions.get(uploadId);
+      if (!session) {
+        res.status(404).json({ error: 'Upload session not found or expired.' });
+        return;
+      }
+
+      const chunk = req.body;
+      if (!Buffer.isBuffer(chunk) || chunk.length === 0) {
+        res.status(400).json({ error: 'Empty video chunk received.' });
+        return;
+      }
+
+      if (session.receivedBytes + chunk.length > MAX_VIDEO_SIZE_BYTES) {
+        uploadSessions.delete(uploadId);
+        fs.unlink(session.filePath, () => {});
+        res.status(413).json({
+          error: `File exceeds the ${MAX_VIDEO_SIZE_MB} MB maximum size limit.`,
+        });
+        return;
+      }
+
+      try {
+        await fs.promises.appendFile(session.filePath, chunk);
+        session.receivedBytes += chunk.length;
+        res.json({ ok: true, receivedBytes: session.receivedBytes });
+      } catch (err) {
+        uploadSessions.delete(uploadId);
+        fs.unlink(session.filePath, () => {});
+        res.status(500).json({
+          error: err instanceof Error ? err.message : 'Failed to write video chunk.',
+        });
+      }
+    }
+  );
+
+  app.post('/api/upload/complete', async (req, res) => {
+    const uploadId = String((req.body as { uploadId?: string } | undefined)?.uploadId ?? '');
+    const session = uploadSessions.get(uploadId);
+    if (!session) {
+      res.status(404).json({ error: 'Upload session not found or expired.' });
+      return;
+    }
+
+    uploadSessions.delete(uploadId);
+    try {
+      const stat = fs.statSync(session.filePath);
+      if (stat.size <= 0) {
+        throw new Error('Uploaded file is empty.');
+      }
+      const payload = await finalizeUploadedVideo(session.filePath, session.originalName, stat.size);
+      res.json(payload);
+    } catch (probeErr) {
+      fs.unlink(session.filePath, () => {});
+      res.status(400).json({
+        error:
+          probeErr instanceof Error
+            ? probeErr.message
+            : 'Could not read video metadata. Please try another file.',
+      });
+    }
+  });
+
+  app.delete('/api/upload/:uploadId', (req, res) => {
+    const session = uploadSessions.get(req.params.uploadId);
+    if (session) {
+      uploadSessions.delete(req.params.uploadId);
+      if (fs.existsSync(session.filePath)) {
+        fs.unlink(session.filePath, () => {});
+      }
+    }
+    res.json({ ok: true });
+  });
+
   app.post('/api/upload', (req, res) => {
     upload.single('video')(req, res, async (err) => {
       if (err) {
@@ -358,33 +585,11 @@ async function startServer(): Promise<void> {
       }
 
       try {
-        const info = await probeVideo(req.file.path);
-        const videoId = crypto.randomUUID();
-        const stored: StoredVideo = {
-          videoId,
-          originalName: req.file.originalname,
-          filePath: req.file.path,
-          size: req.file.size,
-          width: info.width,
-          height: info.height,
-          duration: info.duration,
-          fps: info.fps,
-          hasAudio: info.hasAudio,
-          createdAt: Date.now(),
-        };
-        videos.set(videoId, stored);
-
-        const payload: VideoMetadata = {
-          videoId,
-          originalName: stored.originalName,
-          size: stored.size,
-          width: stored.width,
-          height: stored.height,
-          duration: stored.duration,
-          fps: stored.fps,
-          hasAudio: stored.hasAudio,
-          previewUrl: `/api/videos/${videoId}/stream`,
-        };
+        const payload = await finalizeUploadedVideo(
+          req.file.path,
+          req.file.originalname,
+          req.file.size
+        );
         res.json(payload);
       } catch (probeErr) {
         fs.unlink(req.file.path, () => {});
@@ -562,7 +767,7 @@ async function startServer(): Promise<void> {
       outputPath
     );
 
-    const child = spawn('ffmpeg', args);
+    const child = spawn(FFMPEG_BIN, args);
     let stderrTail = '';
     const totalUs = Math.max(100_000, Math.round(video.duration * 1_000_000));
 
@@ -670,11 +875,14 @@ async function startServer(): Promise<void> {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`ClearFrame studio running on http://0.0.0.0:${PORT}`);
     // Pre-warm sample video in background so "Try Sample Video" is instant
     ensureSampleVideo().catch(() => {});
   });
+  // Allow up to 30 minutes for large (up to 300 MB) uploads on slower connections
+  server.requestTimeout = 30 * 60 * 1000;
+  server.headersTimeout = 65 * 1000;
 }
 
 startServer().catch((err) => {
