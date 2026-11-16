@@ -1,0 +1,8 @@
+{
+  "name": "ClearFrame",
+  "description": "Free online video watermark remover supporting uploads up to 300 MB with multi-region selection, smart inpainting, and before/after comparison.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
