@@ -3,8 +3,9 @@ import compression from 'compression';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import {
   MAX_VIDEO_SIZE_BYTES,
@@ -13,19 +14,36 @@ import {
   buildFfmpegFilterGraph,
   clampRegion,
   getFileExtension,
+  resolveDisplayDimensions,
   type RemovalMode,
   type UpscalePreset,
   type VideoMetadata,
   type WatermarkRegion,
 } from './src/utils/watermark.ts';
+import {
+  BoundedJobQueue,
+  SlidingWindowRateLimiter,
+  selectEvictionsForBudget,
+  type StorageArtifact,
+} from './src/utils/serverGuard.ts';
 
 const PORT = Number(process.env.PORT || 3000);
+const CPU_COUNT = Math.max(1, os.cpus().length);
+const MAX_CONCURRENT_JOBS = Math.max(
+  1,
+  Number(process.env.MAX_CONCURRENT_JOBS) || Math.min(2, Math.max(1, Math.floor(CPU_COUNT / 2)))
+);
+const MAX_QUEUED_JOBS = Math.max(2, Number(process.env.MAX_QUEUED_JOBS) || 25);
+const MAX_WORK_DIR_BYTES =
+  Math.max(512, Number(process.env.MAX_STORAGE_MB) || 3584) * 1024 * 1024;
+const EXPIRY_TTL_MS = 15 * 60 * 1000;
+const MAX_JOB_RUNTIME_MS = 15 * 60 * 1000;
 const WORK_DIR = '/tmp/clearframe-studio';
 const UPLOAD_DIR = path.join(WORK_DIR, 'uploads');
 const OUTPUT_DIR = path.join(WORK_DIR, 'outputs');
 const SAMPLE_DIR = path.join(WORK_DIR, 'sample');
 const SAMPLE_PATH = path.join(SAMPLE_DIR, 'sample-watermarked.mp4');
-const FONT_PATH = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf';
+const NNEDI_WEIGHTS_PATH = path.resolve(process.cwd(), 'models', 'nnedi3_weights.bin');
 
 const require = createRequire(import.meta.url);
 
@@ -79,6 +97,8 @@ interface StoredVideo {
   size: number;
   width: number;
   height: number;
+  needsSarNormalize: boolean;
+  rotation: number;
   duration: number;
   fps: number;
   hasAudio: boolean;
@@ -116,6 +136,155 @@ interface ChunkUploadSession {
 const videos = new Map<string, StoredVideo>();
 const jobs = new Map<string, JobRecord>();
 const uploadSessions = new Map<string, ChunkUploadSession>();
+const activeChildren = new Set<ChildProcess>();
+
+const jobQueue = new BoundedJobQueue({
+  maxConcurrent: MAX_CONCURRENT_JOBS,
+  maxQueued: MAX_QUEUED_JOBS,
+  maxQueuedPerOwner: 3,
+});
+
+const uploadInitLimiter = new SlidingWindowRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  maxRequests: Number(process.env.RATE_LIMIT_UPLOADS) || 20,
+});
+const uploadChunkLimiter = new SlidingWindowRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  maxRequests: Number(process.env.RATE_LIMIT_CHUNKS) || 250,
+});
+const jobSubmitLimiter = new SlidingWindowRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  maxRequests: Number(process.env.RATE_LIMIT_JOBS) || 15,
+});
+const sampleLimiter = new SlidingWindowRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  maxRequests: Number(process.env.RATE_LIMIT_SAMPLE) || 20,
+});
+
+function getClientIp(req: express.Request): string {
+  const forwarded = req.get('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function enforceRateLimit(
+  limiter: SlidingWindowRateLimiter,
+  req: express.Request,
+  res: express.Response,
+  message: string
+): boolean {
+  const decision = limiter.check(getClientIp(req));
+  if (!decision.allowed) {
+    res.setHeader('Retry-After', String(decision.retryAfterSec));
+    res.status(429).json({
+      error: `${message} Please try again in ${decision.retryAfterSec}s.`,
+    });
+    return false;
+  }
+  return true;
+}
+
+function cleanOrphanedWorkFiles(): void {
+  for (const dir of [UPLOAD_DIR, OUTPUT_DIR]) {
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        fs.unlink(path.join(dir, entry), () => {});
+      }
+    } catch {
+      // Ignore cleanup errors on startup
+    }
+  }
+}
+
+function isVideoProtected(videoId: string): boolean {
+  for (const job of jobs.values()) {
+    if (job.videoId === videoId && (job.status === 'queued' || job.status === 'processing')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function evictArtifactById(artifactId: string): void {
+  if (artifactId.startsWith('vid:')) {
+    const id = artifactId.slice(4);
+    const video = videos.get(id);
+    if (video) {
+      if (!video.isSample && fs.existsSync(video.filePath)) {
+        fs.unlink(video.filePath, () => {});
+      }
+      videos.delete(id);
+    }
+    return;
+  }
+  if (artifactId.startsWith('job:')) {
+    const id = artifactId.slice(4);
+    const job = jobs.get(id);
+    if (job) {
+      if (job.outputPath && fs.existsSync(job.outputPath)) {
+        fs.unlink(job.outputPath, () => {});
+      }
+      jobs.delete(id);
+    }
+    return;
+  }
+  if (artifactId.startsWith('up:')) {
+    const id = artifactId.slice(3);
+    const session = uploadSessions.get(id);
+    if (session) {
+      if (fs.existsSync(session.filePath)) {
+        fs.unlink(session.filePath, () => {});
+      }
+      uploadSessions.delete(id);
+    }
+  }
+}
+
+function ensureStorageBudget(incomingBytes: number): boolean {
+  const artifacts: StorageArtifact[] = [];
+
+  for (const [id, video] of videos.entries()) {
+    if (video.isSample) continue;
+    artifacts.push({
+      id: `vid:${id}`,
+      sizeBytes: video.size,
+      createdAt: video.createdAt,
+      protected: isVideoProtected(id),
+    });
+  }
+
+  for (const [jobId, job] of jobs.entries()) {
+    const isActive = job.status === 'queued' || job.status === 'processing';
+    const estimatedOut = job.outputSize ?? 0;
+    if (estimatedOut > 0 || !isActive) {
+      artifacts.push({
+        id: `job:${jobId}`,
+        sizeBytes: estimatedOut,
+        createdAt: job.finishedAt ?? job.startedAt,
+        protected: isActive,
+      });
+    }
+  }
+
+  for (const [uploadId, session] of uploadSessions.entries()) {
+    const isFresh = Date.now() - session.createdAt < 5 * 60 * 1000;
+    artifacts.push({
+      id: `up:${uploadId}`,
+      sizeBytes: Math.max(session.receivedBytes, session.expectedSize),
+      createdAt: session.createdAt,
+      protected: isFresh,
+    });
+  }
+
+  const plan = selectEvictionsForBudget(artifacts, incomingBytes, MAX_WORK_DIR_BYTES);
+  for (const id of plan.evictIds) {
+    evictArtifactById(id);
+  }
+  return plan.allowed;
+}
 
 function runProcess(bin: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -142,6 +311,8 @@ function runProcess(bin: string, args: string[]): Promise<{ stdout: string; stde
 async function probeVideo(filePath: string): Promise<{
   width: number;
   height: number;
+  needsSarNormalize: boolean;
+  rotation: number;
   duration: number;
   fps: number;
   hasAudio: boolean;
@@ -163,8 +334,12 @@ async function probeVideo(filePath: string): Promise<{
       codec_name?: string;
       width?: number;
       height?: number;
+      sample_aspect_ratio?: string;
       r_frame_rate?: string;
+      avg_frame_rate?: string;
       duration?: string;
+      tags?: { rotate?: string };
+      side_data_list?: Array<{ rotation?: number }>;
     }>;
     format?: { duration?: string };
   };
@@ -174,21 +349,38 @@ async function probeVideo(filePath: string): Promise<{
     throw new Error('No readable video stream found in the uploaded file.');
   }
 
+  const sideDataRot = videoStream.side_data_list?.find(
+    (sd) => typeof sd.rotation === 'number' && Number.isFinite(sd.rotation)
+  )?.rotation;
+  const rawRotation = sideDataRot ?? videoStream.tags?.rotate ?? 0;
+  const display = resolveDisplayDimensions(
+    videoStream.width,
+    videoStream.height,
+    videoStream.sample_aspect_ratio,
+    rawRotation
+  );
+
   const audioStream = parsed.streams?.find((s) => s.codec_type === 'audio');
   const rawDuration = Number(parsed.format?.duration ?? videoStream.duration ?? 0);
   const duration = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 5;
 
   let fps = 30;
-  if (videoStream.r_frame_rate && videoStream.r_frame_rate.includes('/')) {
-    const [num, den] = videoStream.r_frame_rate.split('/').map(Number);
+  const fpsRate =
+    videoStream.avg_frame_rate && videoStream.avg_frame_rate !== '0/0'
+      ? videoStream.avg_frame_rate
+      : videoStream.r_frame_rate;
+  if (fpsRate && fpsRate.includes('/')) {
+    const [num, den] = fpsRate.split('/').map(Number);
     if (den > 0 && num > 0) {
       fps = Math.round((num / den) * 100) / 100;
     }
   }
 
   return {
-    width: videoStream.width,
-    height: videoStream.height,
+    width: display.width,
+    height: display.height,
+    needsSarNormalize: display.needsSarNormalize,
+    rotation: display.rotation,
     duration,
     fps,
     hasAudio: Boolean(audioStream),
@@ -207,24 +399,19 @@ async function ensureSampleVideo(): Promise<void> {
   }
 
   sampleGenerationPromise = (async () => {
-    const hasFont = fs.existsSync(FONT_PATH);
-    // Clean scenic animated background with an unmistakable corner watermark box
+    // Clean scenic animated background with an unmistakable corner watermark box (pure drawbox for universal FFmpeg compatibility)
     const drawParts = [
-      "drawbox=x=0:y=0:w=1280:h=240:color=#0f172a@0.85:t=fill",
-      "drawbox=x=0:y=240:w=1280:h=240:color=#1e3a8a@0.75:t=fill",
-      "drawbox=x=0:y=480:w=1280:h=240:color=#0369a1@0.75:t=fill",
-      "drawbox=x=mod(t*220\\,1280)-180:y=160:w=220:h=400:color=#38bdf8@0.35:t=fill",
-      "drawbox=x=1280-mod(t*160\\,1280):y=220:w=180:h=260:color=#e0f2fe@0.25:t=fill",
-      "drawbox=x=906:y=616:w=326:h=60:color=#ffffff@0.22:t=fill",
-      "drawbox=x=906:y=616:w=326:h=60:color=#ffffff@0.55:t=2",
+      'drawbox=x=0:y=0:w=1280:h=240:color=#0f172a@0.85:t=fill',
+      'drawbox=x=0:y=240:w=1280:h=240:color=#1e3a8a@0.75:t=fill',
+      'drawbox=x=0:y=480:w=1280:h=240:color=#0369a1@0.75:t=fill',
+      'drawbox=x=mod(t*220\\,1280)-180:y=160:w=220:h=400:color=#38bdf8@0.35:t=fill',
+      'drawbox=x=1280-mod(t*160\\,1280):y=220:w=180:h=260:color=#e0f2fe@0.25:t=fill',
+      'drawbox=x=906:y=616:w=326:h=60:color=#ffffff@0.25:t=fill',
+      'drawbox=x=906:y=616:w=326:h=60:color=#ffffff@0.75:t=3',
+      'drawbox=x=924:y=632:w=28:h=28:color=#38bdf8@0.95:t=fill',
+      'drawbox=x=966:y=636:w=246:h=8:color=#ffffff@0.92:t=fill',
+      'drawbox=x=966:y=650:w=180:h=8:color=#bae6fd@0.85:t=fill',
     ];
-
-    if (hasFont) {
-      drawParts.push(
-        `drawtext=fontfile=${FONT_PATH}:text='CLEARFRAME SAMPLE':x=72:y=96:fontsize=42:fontcolor=#f8fafc@0.92`,
-        `drawtext=fontfile=${FONT_PATH}:text='WATERMARK DEMO':x=924:y=634:fontsize=26:fontcolor=#ffffff@0.95`
-      );
-    }
 
     await runProcess(FFMPEG_BIN, [
       '-y',
@@ -308,9 +495,9 @@ function streamVideoFile(req: express.Request, res: express.Response, filePath: 
 }
 
 function cleanupExpiredFiles(): void {
-  const cutoff = Date.now() - 30 * 60 * 1000;
+  const cutoff = Date.now() - EXPIRY_TTL_MS;
   for (const [id, video] of videos.entries()) {
-    if (video.createdAt < cutoff) {
+    if (video.createdAt < cutoff && !isVideoProtected(id)) {
       if (!video.isSample && fs.existsSync(video.filePath)) {
         fs.unlink(video.filePath, () => {});
       }
@@ -318,7 +505,8 @@ function cleanupExpiredFiles(): void {
     }
   }
   for (const [jobId, job] of jobs.entries()) {
-    if (job.startedAt < cutoff) {
+    const isActive = job.status === 'queued' || job.status === 'processing';
+    if (!isActive && (job.finishedAt ?? job.startedAt) < cutoff) {
       if (job.outputPath && fs.existsSync(job.outputPath)) {
         fs.unlink(job.outputPath, () => {});
       }
@@ -333,9 +521,15 @@ function cleanupExpiredFiles(): void {
       uploadSessions.delete(uploadId);
     }
   }
+  const now = Date.now();
+  uploadInitLimiter.prune(now);
+  uploadChunkLimiter.prune(now);
+  jobSubmitLimiter.prune(now);
+  sampleLimiter.prune(now);
 }
 
-setInterval(cleanupExpiredFiles, 5 * 60 * 1000).unref();
+cleanOrphanedWorkFiles();
+setInterval(cleanupExpiredFiles, 2 * 60 * 1000).unref();
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
@@ -365,6 +559,7 @@ const upload = multer({
 
 async function startServer(): Promise<void> {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(
     compression({
       filter: (req, res) => {
@@ -383,7 +578,11 @@ async function startServer(): Promise<void> {
   });
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, maxUploadMb: MAX_VIDEO_SIZE_MB });
+    res.json({
+      ok: true,
+      maxUploadMb: MAX_VIDEO_SIZE_MB,
+      queue: jobQueue.getStats(),
+    });
   });
 
   function getBaseUrl(req: express.Request): string {
@@ -494,6 +693,8 @@ async function startServer(): Promise<void> {
       size,
       width: info.width,
       height: info.height,
+      needsSarNormalize: info.needsSarNormalize,
+      rotation: info.rotation,
       duration: info.duration,
       fps: info.fps,
       hasAudio: info.hasAudio,
@@ -516,6 +717,10 @@ async function startServer(): Promise<void> {
   }
 
   app.post('/api/upload/init', (req, res) => {
+    if (!enforceRateLimit(uploadInitLimiter, req, res, 'Too many uploads from this IP.')) {
+      return;
+    }
+
     const { filename, size, type } = (req.body ?? {}) as {
       filename?: string;
       size?: number;
@@ -550,6 +755,14 @@ async function startServer(): Promise<void> {
       return;
     }
 
+    if (!ensureStorageBudget(totalSize)) {
+      res.setHeader('Retry-After', '30');
+      res.status(503).json({
+        error: 'Server storage is temporarily busy with active uploads. Please retry in a moment.',
+      });
+      return;
+    }
+
     const uploadId = crypto.randomUUID();
     const safeExt = ext || '.mp4';
     const filePath = path.join(UPLOAD_DIR, `${uploadId}${safeExt}`);
@@ -574,6 +787,9 @@ async function startServer(): Promise<void> {
     '/api/upload/chunk',
     express.raw({ type: 'application/octet-stream', limit: '16mb' }),
     async (req, res) => {
+      if (!enforceRateLimit(uploadChunkLimiter, req, res, 'Too many upload chunks from this IP.')) {
+        return;
+      }
       const uploadId = String(req.query.uploadId ?? '');
       const session = uploadSessions.get(uploadId);
       if (!session) {
@@ -649,6 +865,19 @@ async function startServer(): Promise<void> {
   });
 
   app.post('/api/upload', (req, res) => {
+    if (!enforceRateLimit(uploadInitLimiter, req, res, 'Too many uploads from this IP.')) {
+      return;
+    }
+
+    const contentLength = Number(req.get('content-length') || 0);
+    if (!ensureStorageBudget(Number.isFinite(contentLength) ? contentLength : 8 * 1024 * 1024)) {
+      res.setHeader('Retry-After', '30');
+      res.status(503).json({
+        error: 'Server storage is temporarily busy with active uploads. Please retry in a moment.',
+      });
+      return;
+    }
+
     upload.single('video')(req, res, async (err) => {
       if (err) {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
@@ -685,7 +914,10 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.post('/api/sample', async (_req, res) => {
+  app.post('/api/sample', async (req, res) => {
+    if (!enforceRateLimit(sampleLimiter, req, res, 'Too many sample requests from this IP.')) {
+      return;
+    }
     try {
       await ensureSampleVideo();
       const stat = fs.statSync(SAMPLE_PATH);
@@ -699,6 +931,8 @@ async function startServer(): Promise<void> {
         size: stat.size,
         width: info.width,
         height: info.height,
+        needsSarNormalize: info.needsSarNormalize,
+        rotation: info.rotation,
         duration: info.duration,
         fps: info.fps,
         hasAudio: info.hasAudio,
@@ -746,7 +980,7 @@ async function startServer(): Promise<void> {
 
   app.delete('/api/videos/:videoId', (req, res) => {
     const video = videos.get(req.params.videoId);
-    if (video) {
+    if (video && !isVideoProtected(video.videoId)) {
       if (!video.isSample && fs.existsSync(video.filePath)) {
         fs.unlink(video.filePath, () => {});
       }
@@ -756,6 +990,10 @@ async function startServer(): Promise<void> {
   });
 
   app.post('/api/jobs', (req, res) => {
+    if (!enforceRateLimit(jobSubmitLimiter, req, res, 'Too many processing requests from this IP.')) {
+      return;
+    }
+
     const { videoId, regions, mode, upscale, detailEnhance } = req.body as {
       videoId?: string;
       regions?: WatermarkRegion[];
@@ -781,12 +1019,26 @@ async function startServer(): Promise<void> {
       return;
     }
 
+    // Reserve approximate output budget safely before queueing
+    const estimatedOutputBytes = Math.min(
+      MAX_VIDEO_SIZE_BYTES,
+      Math.max(2 * 1024 * 1024, video.size * (upscalePreset === 'original' ? 1 : 2))
+    );
+    if (!ensureStorageBudget(estimatedOutputBytes)) {
+      res.setHeader('Retry-After', '30');
+      res.status(503).json({
+        error: 'Server storage is busy with active exports. Please try again in a minute.',
+      });
+      return;
+    }
+
     const removalMode: RemovalMode =
       mode === 'blur' || mode === 'pixelate' || mode === 'delogo' ? mode : 'delogo';
 
     const clampedRegions = rawRegions
       .slice(0, 8)
       .map((r) => clampRegion(r, video.width, video.height));
+    const nnediWeightsPath = fs.existsSync(NNEDI_WEIGHTS_PATH) ? NNEDI_WEIGHTS_PATH : undefined;
     const { filterComplex, outputLabel, outputWidth, outputHeight, upscaled } =
       buildFfmpegFilterGraph(
         clampedRegions,
@@ -797,6 +1049,8 @@ async function startServer(): Promise<void> {
         {
           upscale: upscalePreset,
           detailEnhance: detailEnhance !== false,
+          sarNormalize: video.needsSarNormalize,
+          nnediWeightsPath,
         }
       );
 
@@ -807,8 +1061,8 @@ async function startServer(): Promise<void> {
       jobId,
       videoId: video.videoId,
       originalName: video.originalName,
-      status: 'processing',
-      progress: 1,
+      status: 'queued',
+      progress: 0,
       outputPath,
       outputWidth,
       outputHeight,
@@ -818,89 +1072,156 @@ async function startServer(): Promise<void> {
     };
     jobs.set(jobId, job);
 
-    const args = [
-      '-y',
-      '-threads',
-      '0',
-      '-filter_threads',
-      '0',
-      '-i',
-      video.filePath,
-      '-filter_complex',
-      filterComplex,
-      '-map',
-      outputLabel,
-    ];
+    const clientIp = getClientIp(req);
+    const enqueueResult = jobQueue.enqueue({
+      id: jobId,
+      ownerKey: clientIp,
+      onStart: () => {
+        job.status = 'processing';
+        job.progress = 1;
+        job.startedAt = Date.now();
+      },
+      run: () =>
+        new Promise<void>((resolve) => {
+          if (!fs.existsSync(video.filePath)) {
+            job.status = 'failed';
+            job.error = 'Source video expired before processing started. Please upload again.';
+            job.finishedAt = Date.now();
+            resolve();
+            return;
+          }
 
-    if (video.hasAudio) {
-      const canCopyAudio = video.audioCodec === 'aac' || video.audioCodec === 'mp3';
-      if (canCopyAudio) {
-        args.push('-map', '0:a?', '-c:a', 'copy');
-      } else {
-        args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '192k');
-      }
+          const args = [
+            '-y',
+            '-threads',
+            '0',
+            '-filter_threads',
+            '0',
+            '-i',
+            video.filePath,
+            '-filter_complex',
+            filterComplex,
+            '-map',
+            outputLabel,
+          ];
+
+          if (video.hasAudio) {
+            const canCopyAudio = video.audioCodec === 'aac' || video.audioCodec === 'mp3';
+            if (canCopyAudio) {
+              args.push('-map', '0:a?', '-c:a', 'copy');
+            } else {
+              args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '192k');
+            }
+          }
+
+          args.push(
+            '-c:v',
+            'libx264',
+            '-preset',
+            'superfast',
+            '-crf',
+            upscaled ? '16' : '18',
+            '-pix_fmt',
+            'yuv420p',
+            '-metadata:s:v:0',
+            'rotate=0',
+            '-avoid_negative_ts',
+            'make_zero',
+            '-movflags',
+            '+faststart',
+            '-progress',
+            'pipe:1',
+            '-nostats',
+            outputPath
+          );
+
+          const child = spawn(FFMPEG_BIN, args);
+          activeChildren.add(child);
+          let settled = false;
+          let timedOut = false;
+          const totalUs = Math.max(100_000, Math.round(video.duration * 1_000_000));
+
+          const timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // Ignore kill failure
+            }
+          }, MAX_JOB_RUNTIME_MS);
+
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutHandle);
+            activeChildren.delete(child);
+            resolve();
+          };
+
+          child.stdout.on('data', (chunk) => {
+            const text = chunk.toString();
+            const lines = text.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('out_time_us=')) {
+                const us = Number(line.split('=')[1]);
+                if (Number.isFinite(us) && us > 0) {
+                  const pct = Math.min(99, Math.max(2, Math.round((us / totalUs) * 100)));
+                  job.progress = pct;
+                }
+              } else if (line.startsWith('progress=end')) {
+                job.progress = 99;
+              }
+            }
+          });
+
+          child.stderr.on('data', () => {
+            // Drain stderr so child process pipe never blocks
+          });
+
+          child.on('error', (err) => {
+            job.status = 'failed';
+            job.error = err.message;
+            job.finishedAt = Date.now();
+            finish();
+          });
+
+          child.on('close', (code) => {
+            job.finishedAt = Date.now();
+            if (!timedOut && code === 0 && fs.existsSync(outputPath)) {
+              job.status = 'completed';
+              job.progress = 100;
+              job.outputSize = fs.statSync(outputPath).size;
+            } else {
+              job.status = 'failed';
+              job.error = timedOut
+                ? 'Processing timed out. Try a shorter clip or lower target resolution.'
+                : 'FFmpeg could not process this video. Check region bounds or format.';
+              if (fs.existsSync(outputPath)) {
+                fs.unlink(outputPath, () => {});
+              }
+            }
+            finish();
+          });
+        }),
+    });
+
+    if (!enqueueResult.accepted) {
+      jobs.delete(jobId);
+      const isOwnerLimit = enqueueResult.reason === 'owner_limit';
+      res.setHeader('Retry-After', '15');
+      res.status(isOwnerLimit ? 429 : 503).json({
+        error: isOwnerLimit
+          ? 'You already have multiple videos queued. Please wait for one to finish.'
+          : 'Processing queue is currently full due to high traffic. Please retry in a few seconds.',
+      });
+      return;
     }
 
-    args.push(
-      '-c:v',
-      'libx264',
-      '-preset',
-      'superfast',
-      '-crf',
-      upscaled ? '17' : '18',
-      '-pix_fmt',
-      'yuv420p',
-      '-movflags',
-      '+faststart',
-      '-progress',
-      'pipe:1',
-      '-nostats',
-      outputPath
-    );
-
-    const child = spawn(FFMPEG_BIN, args);
-    let stderrTail = '';
-    const totalUs = Math.max(100_000, Math.round(video.duration * 1_000_000));
-
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      const lines = text.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('out_time_us=')) {
-          const us = Number(line.split('=')[1]);
-          if (Number.isFinite(us) && us > 0) {
-            const pct = Math.min(99, Math.max(2, Math.round((us / totalUs) * 100)));
-            job.progress = pct;
-          }
-        } else if (line.startsWith('progress=end')) {
-          job.progress = 99;
-        }
-      }
+    res.status(202).json({
+      jobId,
+      status: job.status,
+      queuePosition: enqueueResult.queuePosition,
     });
-
-    child.stderr.on('data', (chunk) => {
-      stderrTail = (stderrTail + chunk.toString()).slice(-1000);
-    });
-
-    child.on('error', (err) => {
-      job.status = 'failed';
-      job.error = err.message;
-      job.finishedAt = Date.now();
-    });
-
-    child.on('close', (code) => {
-      job.finishedAt = Date.now();
-      if (code === 0 && fs.existsSync(outputPath)) {
-        job.status = 'completed';
-        job.progress = 100;
-        job.outputSize = fs.statSync(outputPath).size;
-      } else {
-        job.status = 'failed';
-        job.error = 'FFmpeg could not process this video. Check region bounds or format.';
-      }
-    });
-
-    res.status(202).json({ jobId });
   });
 
   app.get('/api/jobs/:jobId', (req, res) => {
@@ -910,10 +1231,13 @@ async function startServer(): Promise<void> {
       return;
     }
 
+    const queuePosition = job.status === 'queued' ? jobQueue.getQueuePosition(job.jobId) : 0;
+
     res.json({
       jobId: job.jobId,
       status: job.status,
       progress: job.progress,
+      queuePosition: queuePosition > 0 ? queuePosition : undefined,
       error: job.error,
       outputUrl: job.status === 'completed' ? `/api/jobs/${job.jobId}/stream` : undefined,
       downloadUrl: job.status === 'completed' ? `/api/jobs/${job.jobId}/download` : undefined,
@@ -1009,14 +1333,41 @@ async function startServer(): Promise<void> {
     app.get('*', sendLocalizedIndexHtml);
   }
 
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (res.headersSent) return;
+    const status =
+      typeof err === 'object' && err !== null && 'status' in err && typeof (err as { status?: number }).status === 'number'
+        ? (err as { status: number }).status
+        : 500;
+    const message = err instanceof Error ? err.message : 'Unexpected server error.';
+    res.status(status).json({ error: message });
+  });
+
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ClearFrame studio running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `ClearFrame studio running on http://0.0.0.0:${PORT} (workers=${MAX_CONCURRENT_JOBS}, queueCap=${MAX_QUEUED_JOBS})`
+    );
     // Pre-warm sample video in background so "Try Sample Video" is instant
     ensureSampleVideo().catch(() => {});
   });
   // Allow up to 30 minutes for large (up to 300 MB) uploads on slower connections
   server.requestTimeout = 30 * 60 * 1000;
   server.headersTimeout = 65 * 1000;
+
+  const shutdown = () => {
+    for (const child of activeChildren) {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // Ignore kill error
+      }
+    }
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 startServer().catch((err) => {

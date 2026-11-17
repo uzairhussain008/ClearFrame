@@ -27,6 +27,8 @@ interface WatermarkEditorProps {
   upscale: UpscalePreset;
   detailEnhance: boolean;
   isProcessing: boolean;
+  processStatus?: 'queued' | 'processing' | 'completed' | 'failed';
+  queuePosition?: number;
   processProgress: number;
   processError: string | null;
   onRegionsChange: (regions: WatermarkRegion[]) => void;
@@ -80,6 +82,8 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
   upscale,
   detailEnhance,
   isProcessing,
+  processStatus,
+  queuePosition,
   processProgress,
   processError,
   onRegionsChange,
@@ -280,6 +284,7 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
         : 'Removing watermark from video';
 
   if (isProcessing) {
+    const isQueued = processStatus === 'queued';
     return (
       <div
         data-testid="processing-view"
@@ -292,7 +297,11 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
 
           <div>
             <h2 className="font-display text-xl font-semibold text-slate-50">
-              {processingTitle}
+              {isQueued
+                ? queuePosition && queuePosition > 0
+                  ? `Queued (#${queuePosition} in line)`
+                  : 'Queued for processing'
+                : processingTitle}
             </h2>
             <p className="mt-1 text-sm text-slate-400 truncate">{video.originalName}</p>
           </div>
@@ -304,19 +313,21 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
                 {targetDims.width}×{targetDims.height}
               </span>
               <span className="font-mono text-sm font-semibold text-sky-400 tabular-nums">
-                {processProgress}%
+                {isQueued ? 'Waiting' : `${processProgress}%`}
               </span>
             </div>
             <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
               <div
                 className="h-full bg-sky-500 transition-[width] duration-200 ease-out"
-                style={{ width: `${Math.max(4, processProgress)}%` }}
+                style={{ width: `${isQueued ? 4 : Math.max(4, processProgress)}%` }}
               />
             </div>
           </div>
 
           <p className="text-xs text-slate-400">
-            Encoding visually lossless frames and preserving original audio. Keep this tab open.
+            {isQueued
+              ? 'Waiting for an available processing slot. Your job will start automatically.'
+              : 'Encoding visually lossless frames and preserving original audio. Keep this tab open.'}
           </p>
         </div>
       </div>

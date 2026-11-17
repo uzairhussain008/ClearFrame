@@ -6,6 +6,7 @@ import {
   formatBytes,
   formatTimecode,
   clampRegion,
+  resolveDisplayDimensions,
   computeUpscaleDimensions,
   buildFfmpegFilterGraph,
 } from './watermark';
@@ -49,6 +50,32 @@ test('formatBytes and formatTimecode format values predictably', () => {
   assert.equal(formatTimecode(65.4), '01:05.4');
 });
 
+test('resolveDisplayDimensions handles 90/-90/270 rotation metadata and non-square SAR', () => {
+  const portraitRotated = resolveDisplayDimensions(1280, 720, '1:1', -90);
+  assert.deepEqual(
+    { width: portraitRotated.width, height: portraitRotated.height, needsSarNormalize: portraitRotated.needsSarNormalize },
+    { width: 720, height: 1280, needsSarNormalize: false }
+  );
+
+  const portrait270 = resolveDisplayDimensions(1920, 1080, '1:1', 270);
+  assert.deepEqual(
+    { width: portrait270.width, height: portrait270.height },
+    { width: 1080, height: 1920 }
+  );
+
+  const upsideDownHoriz = resolveDisplayDimensions(1280, 720, '1:1', 180);
+  assert.deepEqual(
+    { width: upsideDownHoriz.width, height: upsideDownHoriz.height },
+    { width: 1280, height: 720 }
+  );
+
+  const anamorphic = resolveDisplayDimensions(1440, 1080, '4:3', 0);
+  assert.deepEqual(
+    { width: anamorphic.width, height: anamorphic.height, needsSarNormalize: anamorphic.needsSarNormalize },
+    { width: 1920, height: 1080, needsSarNormalize: true }
+  );
+});
+
 test('clampRegion enforces 1px FFmpeg delogo border margin and minimum size', () => {
   const clamped = clampRegion(
     { id: '1', label: 'Logo', x: 0, y: 0, w: 150, h: 60 },
@@ -77,7 +104,7 @@ test('clampRegion enforces 1px FFmpeg delogo border margin and minimum size', ()
   assert.equal(tiny.h, 12);
 });
 
-test('computeUpscaleDimensions preserves aspect ratio and never downscales', () => {
+test('computeUpscaleDimensions preserves aspect ratio, orientation, and never downscales', () => {
   const landscape4k = computeUpscaleDimensions(1280, 720, '4k');
   assert.deepEqual(
     { width: landscape4k.width, height: landscape4k.height, upscaled: landscape4k.upscaled },
@@ -89,12 +116,18 @@ test('computeUpscaleDimensions preserves aspect ratio and never downscales', () 
     { width: portrait4k.width, height: portrait4k.height, upscaled: portrait4k.upscaled },
     { width: 2160, height: 3840, upscaled: true }
   );
+  assert.ok(portrait4k.width < portrait4k.height);
+
+  const portraitReel = computeUpscaleDimensions(480, 854, '4k');
+  assert.ok(portraitReel.width < portraitReel.height);
+  assert.ok(Math.abs(portraitReel.width / portraitReel.height - 480 / 854) < 0.01);
 
   const square2k = computeUpscaleDimensions(1080, 1080, '2k');
   assert.deepEqual(
     { width: square2k.width, height: square2k.height, upscaled: square2k.upscaled },
     { width: 1440, height: 1440, upscaled: true }
   );
+  assert.equal(square2k.width, square2k.height);
 
   const already4k = computeUpscaleDimensions(3840, 2160, '1080p');
   assert.deepEqual(
@@ -103,7 +136,7 @@ test('computeUpscaleDimensions preserves aspect ratio and never downscales', () 
   );
 });
 
-test('buildFfmpegFilterGraph generates valid delogo, blur, pixelate, and 4K upscale graphs', () => {
+test('buildFfmpegFilterGraph generates valid delogo, NNEDI3 restoration, SAR normalize, and 4K upscale graphs', () => {
   const delogo = buildFfmpegFilterGraph(
     [
       { id: 'a', label: 'R1', x: 900, y: 610, w: 320, h: 64 },
@@ -114,39 +147,38 @@ test('buildFfmpegFilterGraph generates valid delogo, blur, pixelate, and 4K upsc
     720,
     5
   );
-  assert.equal(delogo.outputLabel, '[v_2]');
+  assert.equal(delogo.outputLabel, '[vout]');
   assert.equal(delogo.outputWidth, 1280);
   assert.equal(delogo.outputHeight, 720);
   assert.match(delogo.filterComplex, /\[0:v\]delogo=x=900:y=610:w=320:h=64:show=0\[v_1\]/);
   assert.match(
     delogo.filterComplex,
-    /\[v_1\]delogo=x=40:y=40:w=120:h=40:show=0:enable='between\(t,1,3.5\)'\[v_2\]$/
+    /\[v_1\]delogo=x=40:y=40:w=120:h=40:show=0:enable='between\(t,1,3.5\)'\[v_2\];\[v_2\]setsar=1\[vout\]$/
   );
 
   const delogo4k = buildFfmpegFilterGraph(
-    [{ id: 'a', label: 'R1', x: 900, y: 610, w: 320, h: 64 }],
+    [{ id: 'a', label: 'R1', x: 100, y: 100, w: 120, h: 48 }],
     'delogo',
-    1280,
     720,
+    1280,
     5,
-    { upscale: '4k', detailEnhance: true }
+    { upscale: '4k', detailEnhance: true, nnediWeightsPath: '/app/applet/models/nnedi3_weights.bin' }
   );
-  assert.equal(delogo4k.outputWidth, 3840);
-  assert.equal(delogo4k.outputHeight, 2160);
+  assert.equal(delogo4k.outputWidth, 2160);
+  assert.equal(delogo4k.outputHeight, 3840);
   assert.equal(delogo4k.upscaled, true);
-  assert.match(
-    delogo4k.filterComplex,
-    /scale=3840:2160:flags=lanczos,unsharp=3:3:0\.35\[vout\]$/
-  );
+  assert.match(delogo4k.filterComplex, /deblock=filter=weak:block=4,hqdn3d=/);
+  assert.match(delogo4k.filterComplex, /nnedi=weights='\/app\/applet\/models\/nnedi3_weights\.bin'/);
+  assert.match(delogo4k.filterComplex, /scale=2160:3840:flags=lanczos,setsar=1,cas=strength=0\.42\[vout\]$/);
 
-  // Upscale-only without watermark regions
-  const upscaleOnly = buildFfmpegFilterGraph([], 'delogo', 1280, 720, 5, {
+  const upscalePlain = buildFfmpegFilterGraph([], 'delogo', 1280, 720, 5, {
     upscale: '4k',
     detailEnhance: false,
+    sarNormalize: true,
   });
   assert.equal(
-    upscaleOnly.filterComplex,
-    '[0:v]scale=3840:2160:flags=lanczos[vout]'
+    upscalePlain.filterComplex,
+    '[0:v]scale=1280:720:flags=lanczos,setsar=1[v_sar];[v_sar]scale=3840:2160:flags=lanczos,setsar=1[vout]'
   );
 
   // Requires at least a region or an upscale

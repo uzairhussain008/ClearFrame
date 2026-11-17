@@ -328,8 +328,9 @@ export default function App() {
       setJobId(data.jobId);
       setJob({
         jobId: data.jobId,
-        status: 'processing',
-        progress: 2,
+        status: data.status === 'queued' ? 'queued' : 'processing',
+        progress: data.status === 'queued' ? 0 : 2,
+        queuePosition: typeof data.queuePosition === 'number' ? data.queuePosition : undefined,
       });
     } catch (err) {
       setProcessError(err instanceof Error ? err.message : 'Processing failed to start.');
@@ -387,7 +388,7 @@ export default function App() {
     }
   };
 
-  const isProcessing = Boolean(job && job.status === 'processing');
+  const isProcessing = Boolean(job && (job.status === 'processing' || job.status === 'queued'));
   const isCompleted = Boolean(job && job.status === 'completed' && job.outputUrl);
 
   return (
@@ -449,6 +450,8 @@ export default function App() {
                   upscale={upscale}
                   detailEnhance={detailEnhance}
                   isProcessing={isProcessing}
+                  processStatus={job?.status}
+                  queuePosition={job?.queuePosition}
                   processProgress={job?.progress ?? 0}
                   processError={processError}
                   onRegionsChange={setRegions}

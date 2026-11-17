@@ -42,6 +42,7 @@ export interface ProcessingJobStatus {
   jobId: string;
   status: 'queued' | 'processing' | 'completed' | 'failed';
   progress: number;
+  queuePosition?: number;
   error?: string;
   outputUrl?: string;
   downloadUrl?: string;
@@ -75,6 +76,59 @@ function toEven(value: number): number {
   return Math.max(2, Math.round(value / 2) * 2);
 }
 
+export interface DisplayDimensions {
+  width: number;
+  height: number;
+  rotation: number;
+  sarNum: number;
+  sarDen: number;
+  needsSarNormalize: boolean;
+}
+
+export function parseSampleAspectRatio(sar?: string | null): { sarNum: number; sarDen: number } {
+  if (!sar || typeof sar !== 'string') return { sarNum: 1, sarDen: 1 };
+  const match = sar.trim().match(/^(\d+)\s*[:/]\s*(\d+)$/);
+  if (!match) return { sarNum: 1, sarDen: 1 };
+  const num = Number(match[1]);
+  const den = Number(match[2]);
+  if (!Number.isFinite(num) || !Number.isFinite(den) || num <= 0 || den <= 0) {
+    return { sarNum: 1, sarDen: 1 };
+  }
+  return { sarNum: num, sarDen: den };
+}
+
+export function resolveDisplayDimensions(
+  codedWidth: number,
+  codedHeight: number,
+  sampleAspectRatio?: string | null,
+  rawRotationDeg?: number | string | null
+): DisplayDimensions {
+  const rawW = Math.max(2, Math.round(codedWidth));
+  const rawH = Math.max(2, Math.round(codedHeight));
+  const { sarNum, sarDen } = parseSampleAspectRatio(sampleAspectRatio);
+  const needsSarNormalize = sarNum !== sarDen;
+
+  // Apply pixel aspect ratio in coded space before display rotation
+  const parW = needsSarNormalize ? toEven((rawW * sarNum) / sarDen) : toEven(rawW);
+  const parH = toEven(rawH);
+
+  const parsedRot = Number(rawRotationDeg ?? 0);
+  const normalizedRot = Number.isFinite(parsedRot)
+    ? ((Math.round(parsedRot) % 360) + 360) % 360
+    : 0;
+  const quarterTurns = Math.round(normalizedRot / 90) % 4;
+  const swapAxes = quarterTurns === 1 || quarterTurns === 3;
+
+  return {
+    width: swapAxes ? parH : parW,
+    height: swapAxes ? parW : parH,
+    rotation: normalizedRot,
+    sarNum,
+    sarDen,
+    needsSarNormalize,
+  };
+}
+
 export function computeUpscaleDimensions(
   sourceWidth: number,
   sourceHeight: number,
@@ -102,9 +156,21 @@ export function computeUpscaleDimensions(
     };
   }
 
+  let outW = toEven(safeW * scale);
+  let outH = toEven(safeH * scale);
+
+  // Strictly guarantee orientation preservation (portrait, landscape, or square)
+  if (safeW === safeH) {
+    outH = outW;
+  } else if (safeW < safeH && outW >= outH) {
+    outW = Math.max(2, outH - 2);
+  } else if (safeW > safeH && outH >= outW) {
+    outH = Math.max(2, outW - 2);
+  }
+
   return {
-    width: toEven(safeW * scale),
-    height: toEven(safeH * scale),
+    width: outW,
+    height: outH,
     upscaled: true,
     label: target.label,
   };
@@ -240,6 +306,12 @@ function buildEnableClause(
 export interface BuildFilterOptions {
   upscale?: UpscalePreset;
   detailEnhance?: boolean;
+  sarNormalize?: boolean;
+  nnediWeightsPath?: string;
+}
+
+function escapeFfmpegPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 }
 
 export function buildFfmpegFilterGraph(
@@ -250,17 +322,25 @@ export function buildFfmpegFilterGraph(
   duration?: number,
   options?: BuildFilterOptions
 ): { filterComplex: string; outputLabel: string; outputWidth: number; outputHeight: number; upscaled: boolean } {
+  const safeW = toEven(Math.max(2, videoWidth));
+  const safeH = toEven(Math.max(2, videoHeight));
   const upscalePreset: UpscalePreset = options?.upscale ?? 'original';
   const detailEnhance = options?.detailEnhance ?? true;
-  const targetDims = computeUpscaleDimensions(videoWidth, videoHeight, upscalePreset);
+  const targetDims = computeUpscaleDimensions(safeW, safeH, upscalePreset);
 
   if ((!regions || regions.length === 0) && !targetDims.upscaled) {
     throw new Error('Select at least one watermark region or choose an upscale resolution.');
   }
 
-  const clamped = (regions ?? []).map((r) => clampRegion(r, videoWidth, videoHeight));
+  const clamped = (regions ?? []).map((r) => clampRegion(r, safeW, safeH));
   const steps: string[] = [];
   let currentLabel = '0:v';
+
+  // Normalize anamorphic pixels to 1:1 square display pixels before coordinate masks or scaling
+  if (options?.sarNormalize) {
+    steps.push(`[${currentLabel}]scale=${safeW}:${safeH}:flags=lanczos,setsar=1[v_sar]`);
+    currentLabel = 'v_sar';
+  }
 
   clamped.forEach((region, idx) => {
     const nextLabel = `v_${idx + 1}`;
@@ -310,9 +390,47 @@ export function buildFfmpegFilterGraph(
 
   const finalLabel = 'vout';
   if (targetDims.upscaled) {
-    const scaleStep = `scale=${targetDims.width}:${targetDims.height}:flags=lanczos`;
-    const filterChain = detailEnhance ? `${scaleStep},unsharp=3:3:0.35` : scaleStep;
-    steps.push(`[${currentLabel}]${filterChain}[${finalLabel}]`);
+    const scaleRatio = Math.max(targetDims.width / safeW, targetDims.height / safeH);
+    const sourcePixels = safeW * safeH;
+    const filterStages: string[] = [];
+
+    if (detailEnhance) {
+      // Stage 1: Remove block/compression artifacts before any enlargement
+      filterStages.push('deblock=filter=weak:block=4');
+      // Stage 2: Gentle spatio-temporal denoising to remove compression grain while preserving edges
+      filterStages.push(
+        scaleRatio >= 1.8 || sourcePixels <= 640 * 640
+          ? 'hqdn3d=1.4:1.0:2.6:2.0'
+          : 'hqdn3d=1.0:0.7:1.8:1.4'
+      );
+
+      // Stage 3: 2D NNEDI3 Neural Edge-Directed Super-Resolution (2x vertical + 2x horizontal)
+      if (options?.nnediWeightsPath && sourcePixels <= 1920 * 1080 * 1.05) {
+        const weights = escapeFfmpegPath(options.nnediWeightsPath);
+        const isSmallSource = sourcePixels <= 640 * 640;
+        const nns = isSmallSource ? 'n32' : 'n16';
+        const nsize = isSmallSource ? 's16x4' : 's8x4';
+        const nnediOpt = `weights='${weights}':field=t:deint=all:nsize=${nsize}:nns=${nns}:qual=fast:pscrn=new2`;
+        filterStages.push(
+          `scale=iw:ih*2:flags=neighbor`,
+          `nnedi=${nnediOpt}`,
+          `transpose=1`,
+          `scale=iw:ih*2:flags=neighbor`,
+          `nnedi=${nnediOpt}`,
+          `transpose=2`
+        );
+      }
+
+      // Stage 4: Exact aspect-safe Lanczos target sizing, square SAR=1, and Contrast Adaptive Sharpening
+      filterStages.push(`scale=${targetDims.width}:${targetDims.height}:flags=lanczos`);
+      filterStages.push('setsar=1');
+      filterStages.push(`cas=strength=${scaleRatio >= 1.8 ? '0.42' : '0.35'}`);
+    } else {
+      filterStages.push(`scale=${targetDims.width}:${targetDims.height}:flags=lanczos`);
+      filterStages.push('setsar=1');
+    }
+
+    steps.push(`[${currentLabel}]${filterStages.join(',')}[${finalLabel}]`);
     return {
       filterComplex: steps.join(';'),
       outputLabel: `[${finalLabel}]`,
@@ -324,7 +442,7 @@ export function buildFfmpegFilterGraph(
 
   const needsEvenCrop = videoWidth % 2 !== 0 || videoHeight % 2 !== 0;
   if (needsEvenCrop) {
-    steps.push(`[${currentLabel}]scale=trunc(iw/2)*2:trunc(ih/2)*2[${finalLabel}]`);
+    steps.push(`[${currentLabel}]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[${finalLabel}]`);
     return {
       filterComplex: steps.join(';'),
       outputLabel: `[${finalLabel}]`,
@@ -334,9 +452,10 @@ export function buildFfmpegFilterGraph(
     };
   }
 
+  steps.push(`[${currentLabel}]setsar=1[${finalLabel}]`);
   return {
     filterComplex: steps.join(';'),
-    outputLabel: `[${currentLabel}]`,
+    outputLabel: `[${finalLabel}]`,
     outputWidth: targetDims.width,
     outputHeight: targetDims.height,
     upscaled: false,

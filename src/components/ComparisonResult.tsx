@@ -142,7 +142,7 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
                 onTimeUpdate={() => {
                   if (afterRef.current) setCurrentTime(afterRef.current.currentTime);
                 }}
-                className="h-full w-full object-fill"
+                className="h-full w-full object-contain"
               />
 
               {/* Original Video Layer (Left side, clipped by splitPercent) */}
@@ -153,7 +153,7 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
                 playsInline
                 preload="metadata"
                 style={{ clipPath: `inset(0 ${100 - splitPercent}% 0 0)` }}
-                className="pointer-events-none absolute inset-0 h-full w-full object-fill"
+                className="pointer-events-none absolute inset-0 h-full w-full object-contain"
               />
 
               {/* Split Line Divider */}
@@ -208,7 +208,10 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
               onTimeUpdate={() => {
                 if (afterRef.current) setCurrentTime(afterRef.current.currentTime);
               }}
-              style={{ aspectRatio: `${video.width} / ${video.height}`, maxHeight: '360px' }}
+              style={{
+                aspectRatio: `${job.outputWidth ?? video.width} / ${job.outputHeight ?? video.height}`,
+                maxHeight: '360px',
+              }}
               className="mx-auto w-full object-contain"
             />
           </div>
