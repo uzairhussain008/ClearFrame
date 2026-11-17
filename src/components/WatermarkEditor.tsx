@@ -22,6 +22,7 @@ import {
 
 interface WatermarkEditorProps {
   video: VideoMetadata;
+  removeWatermarkEnabled: boolean;
   regions: WatermarkRegion[];
   mode: RemovalMode;
   upscale: UpscalePreset;
@@ -31,6 +32,7 @@ interface WatermarkEditorProps {
   queuePosition?: number;
   processProgress: number;
   processError: string | null;
+  onRemoveWatermarkToggle: (enabled: boolean) => void;
   onRegionsChange: (regions: WatermarkRegion[]) => void;
   onModeChange: (mode: RemovalMode) => void;
   onUpscaleChange: (upscale: UpscalePreset) => void;
@@ -77,6 +79,7 @@ const UPSCALE_OPTIONS: Array<{ id: UpscalePreset; label: string }> = [
 
 export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
   video,
+  removeWatermarkEnabled,
   regions,
   mode,
   upscale,
@@ -86,6 +89,7 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
   queuePosition,
   processProgress,
   processError,
+  onRemoveWatermarkToggle,
   onRegionsChange,
   onModeChange,
   onUpscaleChange,
@@ -267,19 +271,22 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
 
   const activeMode = MODE_OPTIONS.find((m) => m.id === mode) ?? MODE_OPTIONS[0];
   const targetDims = computeUpscaleDimensions(video.width, video.height, upscale);
-  const canProcess = regions.length > 0 || targetDims.upscaled;
+  const activeRegionCount = removeWatermarkEnabled ? regions.length : 0;
+  const canProcess = activeRegionCount > 0 || targetDims.upscaled;
 
   const actionLabel =
-    regions.length > 0 && targetDims.upscaled
+    activeRegionCount > 0 && targetDims.upscaled
       ? `Remove Watermark & Upscale (${upscale.toUpperCase()})`
-      : regions.length === 0 && targetDims.upscaled
+      : activeRegionCount === 0 && targetDims.upscaled
         ? `Upscale Video to ${upscale.toUpperCase()}`
-        : 'Remove Watermark';
+        : !removeWatermarkEnabled
+          ? 'Select Upscale or Remove Watermark'
+          : 'Remove Watermark';
 
   const processingTitle =
-    regions.length > 0 && targetDims.upscaled
+    activeRegionCount > 0 && targetDims.upscaled
       ? `Removing watermark & upscaling to ${upscale.toUpperCase()}`
-      : regions.length === 0 && targetDims.upscaled
+      : activeRegionCount === 0 && targetDims.upscaled
         ? `Upscaling video to ${upscale.toUpperCase()}`
         : 'Removing watermark from video';
 
@@ -309,7 +316,7 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
           <div className="space-y-2 text-left">
             <div className="flex items-center justify-between text-xs font-medium text-slate-300">
               <span className="font-mono tabular-nums">
-                {regions.length > 0 ? `${activeMode.label} · ` : ''}
+                {activeRegionCount > 0 ? `${activeMode.label} · ` : ''}
                 {targetDims.width}×{targetDims.height}
               </span>
               <span className="font-mono text-sm font-semibold text-sky-400 tabular-nums">
@@ -340,17 +347,21 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
       <div className="rounded-xl border border-slate-800 bg-[#111A2E] p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
           <span>
-            Drag anywhere on the frame to mark a watermark, or drag corners to resize.
+            {removeWatermarkEnabled
+              ? 'Drag anywhere on the frame to mark a watermark, or drag corners to resize.'
+              : 'Select Remove Watermark on the right (or drag on the frame) to erase logos or text.'}
           </span>
-          <button
-            type="button"
-            onClick={handleAddRegionButton}
-            disabled={regions.length >= 8}
-            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-100 hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Plus className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" />
-            Add Box
-          </button>
+          {removeWatermarkEnabled && (
+            <button
+              type="button"
+              onClick={handleAddRegionButton}
+              disabled={regions.length >= 8}
+              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-100 hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" />
+              Add Box
+            </button>
+          )}
         </div>
 
         <div className="relative flex w-full items-center justify-center overflow-hidden rounded-lg bg-slate-950">
@@ -366,14 +377,14 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
               ref={videoRef}
               src={video.previewUrl}
               playsInline
-              preload="metadata"
+              preload="auto"
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
               onEnded={() => setIsPlaying(false)}
               onTimeUpdate={() => {
                 if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
               }}
-              className="h-full w-full object-fill select-none"
+              className="h-full w-full object-contain select-none"
             />
 
             {/* Interactive Watermark Selection Overlay */}
@@ -381,7 +392,7 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
               ref={overlayRef}
               onPointerDown={handleStagePointerDown}
               data-testid="watermark-overlay"
-              className="absolute inset-0 cursor-crosshair touch-none"
+              className={`absolute inset-0 touch-none ${removeWatermarkEnabled ? 'cursor-crosshair' : 'cursor-default'}`}
             >
               {regions.map((region) => {
                 const isSelected = region.id === selectedId;
@@ -521,27 +532,47 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
           </button>
         </div>
 
-        {/* Removal Method Segmented Control */}
-        <div>
-          <span className="block text-xs font-semibold text-slate-200">Removal Method</span>
-          <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-[#0B1120] p-1">
-            {MODE_OPTIONS.map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => onModeChange(opt.id)}
-                className={`rounded-md px-2 py-2 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
-                  mode === opt.id
-                    ? 'bg-slate-800 text-sky-300'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
+        {/* Manual Watermark Removal Toggle */}
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-[#0B1120] px-3 py-2.5 cursor-pointer">
+          <div>
+            <span className="block text-xs font-semibold text-slate-200">Remove Watermark</span>
+            <span className="block text-[11px] text-slate-400">
+              {removeWatermarkEnabled
+                ? 'Select boxes over logos or text overlays'
+                : 'Enable to mark and erase watermarks'}
+            </span>
           </div>
-          <p className="mt-2 text-xs text-slate-400">{activeMode.hint}</p>
-        </div>
+          <input
+            type="checkbox"
+            checked={removeWatermarkEnabled}
+            onChange={(e) => onRemoveWatermarkToggle(e.target.checked)}
+            className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-900 accent-sky-400 cursor-pointer"
+          />
+        </label>
+
+        {/* Removal Method Segmented Control (shown only when Remove Watermark is enabled) */}
+        {removeWatermarkEnabled && (
+          <div>
+            <span className="block text-xs font-semibold text-slate-200">Removal Method</span>
+            <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-[#0B1120] p-1">
+              {MODE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onModeChange(opt.id)}
+                  className={`rounded-md px-2 py-2 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    mode === opt.id
+                      ? 'bg-slate-800 text-sky-300'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-slate-400">{activeMode.hint}</p>
+          </div>
+        )}
 
         {/* Output Resolution / Upscale Selector */}
         <div className="border-t border-slate-800 pt-4">
@@ -578,7 +609,7 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
                 className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 accent-sky-400 cursor-pointer"
               />
               <span>
-                Preserve crisp detail (Lanczos + Contrast Adaptive Sharpen)
+                Neural detail enhance (NNEDI3 + Adaptive Sharpen)
               </span>
             </label>
           ) : upscale !== 'original' ? (
@@ -592,31 +623,32 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
           )}
         </div>
 
-        {/* Selected Regions List */}
-        <div className="space-y-2.5 border-t border-slate-800 pt-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-200">
-              Watermark Regions ({regions.length})
-            </span>
-            {regions.length === 0 && (
-              <button
-                type="button"
-                onClick={handleAddRegionButton}
-                className="text-xs font-medium text-sky-400 hover:underline cursor-pointer"
-              >
-                + Add region
-              </button>
-            )}
-          </div>
+        {/* Selected Regions List (shown only when Remove Watermark is enabled) */}
+        {removeWatermarkEnabled && (
+          <div className="space-y-2.5 border-t border-slate-800 pt-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-200">
+                Watermark Regions ({regions.length})
+              </span>
+              {regions.length === 0 && (
+                <button
+                  type="button"
+                  onClick={handleAddRegionButton}
+                  className="text-xs font-medium text-sky-400 hover:underline cursor-pointer"
+                >
+                  + Add region
+                </button>
+              )}
+            </div>
 
-          {regions.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-slate-700 bg-[#0B1120]/60 px-3 py-4 text-center text-xs text-slate-400">
-              {targetDims.upscaled
-                ? `No watermark boxes selected — video will be upscaled to ${upscale.toUpperCase()} only.`
-                : 'Draw a box over the watermark or select an upscale resolution above.'}
-            </p>
-          ) : (
-            <div className="max-h-52 space-y-2 overflow-y-auto pr-0.5">
+            {regions.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-700 bg-[#0B1120]/60 px-3 py-4 text-center text-xs text-slate-400">
+                {targetDims.upscaled
+                  ? `No watermark boxes selected — video will be upscaled to ${upscale.toUpperCase()} only.`
+                  : 'Draw a box over the watermark or click + Add region above.'}
+              </p>
+            ) : (
+              <div className="max-h-52 space-y-2 overflow-y-auto pr-0.5">
               {regions.map((region) => {
                 const isSelected = region.id === selectedId;
                 return (
@@ -697,6 +729,7 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {processError && (
           <div

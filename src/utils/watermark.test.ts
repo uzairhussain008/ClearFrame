@@ -150,10 +150,10 @@ test('buildFfmpegFilterGraph generates valid delogo, NNEDI3 restoration, SAR nor
   assert.equal(delogo.outputLabel, '[vout]');
   assert.equal(delogo.outputWidth, 1280);
   assert.equal(delogo.outputHeight, 720);
-  assert.match(delogo.filterComplex, /\[0:v\]delogo=x=900:y=610:w=320:h=64:show=0\[v_1\]/);
+  assert.match(delogo.filterComplex, /\[0:v\]format=yuv420p\[v_norm\];\[v_norm\]delogo=x=900:y=610:w=320:h=64:show=0\[v_1\]/);
   assert.match(
     delogo.filterComplex,
-    /\[v_1\]delogo=x=40:y=40:w=120:h=40:show=0:enable='between\(t,1,3.5\)'\[v_2\];\[v_2\]setsar=1\[vout\]$/
+    /\[v_1\]delogo=x=40:y=40:w=120:h=40:show=0:enable='between\(t,1,3\.5\)'\[v_2\];\[v_2\]setsar=1\[vout\]$/
   );
 
   const delogo4k = buildFfmpegFilterGraph(
@@ -169,7 +169,18 @@ test('buildFfmpegFilterGraph generates valid delogo, NNEDI3 restoration, SAR nor
   assert.equal(delogo4k.upscaled, true);
   assert.match(delogo4k.filterComplex, /deblock=filter=weak:block=4,hqdn3d=/);
   assert.match(delogo4k.filterComplex, /nnedi=weights='\/app\/applet\/models\/nnedi3_weights\.bin'/);
-  assert.match(delogo4k.filterComplex, /scale=2160:3840:flags=lanczos,setsar=1,cas=strength=0\.42\[vout\]$/);
+  assert.match(delogo4k.filterComplex, /scale=2160:3840:flags=lanczos,setsar=1,unsharp=5:5:0\.38:3:3:0\.10,cas=strength=0\.28\[vout\]$/);
+
+  const fallback4k = buildFfmpegFilterGraph(
+    [],
+    'delogo',
+    720,
+    1280,
+    5,
+    { upscale: '4k', detailEnhance: true, nnediWeightsPath: '/app/applet/models/nnedi3_weights.bin', useNnedi: false }
+  );
+  assert.doesNotMatch(fallback4k.filterComplex, /nnedi=/);
+  assert.match(fallback4k.filterComplex, /deblock=filter=weak:block=4,hqdn3d=.*scale=2160:3840:flags=lanczos,setsar=1,unsharp=5:5:0\.38:3:3:0\.10,cas=strength=0\.28\[vout\]$/);
 
   const upscalePlain = buildFfmpegFilterGraph([], 'delogo', 1280, 720, 5, {
     upscale: '4k',
@@ -178,7 +189,7 @@ test('buildFfmpegFilterGraph generates valid delogo, NNEDI3 restoration, SAR nor
   });
   assert.equal(
     upscalePlain.filterComplex,
-    '[0:v]scale=1280:720:flags=lanczos,setsar=1[v_sar];[v_sar]scale=3840:2160:flags=lanczos,setsar=1[vout]'
+    '[0:v]format=yuv420p,scale=1280:720:flags=lanczos,setsar=1[v_norm];[v_norm]scale=3840:2160:flags=lanczos,setsar=1[vout]'
   );
 
   // Requires at least a region or an upscale

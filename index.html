@@ -115,7 +115,7 @@
               "Free video watermark removal up to 300 MB",
               "Smart Inpaint (Delogo), Soft Blur, and Mosaic Mask modes",
               "Up to 8 independent watermark selection regions with start and end timestamps",
-              "Aspect-ratio safe video upscaling to 1080p Full HD, 2K QHD, and 4K UHD using Lanczos and Contrast Adaptive Sharpening",
+              "Aspect-ratio safe video upscaling to 1080p Full HD, 2K QHD, and 4K UHD using NNEDI3 neural reconstruction, Lanczos resampling, and Adaptive Sharpening",
               "Original audio stream preservation and before/after split comparison"
             ],
             "offers": {
@@ -166,7 +166,7 @@
                 "name": "Does upscaling to 4K degrade the original video quality?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "No. ClearFrame uses high-precision Lanczos resampling with Contrast Adaptive Sharpening and visually lossless H.264 MP4 encoding (CRF 17), and never downscales if your source is already 4K or higher."
+                  "text": "No. ClearFrame uses NNEDI3 neural edge-directed reconstruction, deblocking, Lanczos resampling, and balanced adaptive sharpening with high-profile H.264 MP4 encoding (CRF 16–18), and never downscales if your source is already 4K or higher."
                 }
               },
               {
@@ -190,7 +190,7 @@
                 "name": "How long are uploaded videos stored?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Temporary uploaded and processed video files are automatically deleted after 30 minutes or immediately when you switch videos."
+                  "text": "Temporary uploaded and processed video files are automatically deleted after 15 minutes or immediately when you switch videos."
                 }
               }
             ]

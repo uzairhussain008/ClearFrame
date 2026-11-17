@@ -24,6 +24,7 @@ export default function App() {
   const activeXhrRef = useRef<XMLHttpRequest | null>(null);
 
   const [video, setVideo] = useState<VideoMetadata | null>(null);
+  const [removeWatermarkEnabled, setRemoveWatermarkEnabled] = useState(false);
   const [regions, setRegions] = useState<WatermarkRegion[]>([]);
   const [mode, setMode] = useState<RemovalMode>('delogo');
   const [upscale, setUpscale] = useState<UpscalePreset>('original');
@@ -41,6 +42,25 @@ export default function App() {
   const [job, setJob] = useState<ProcessingJobStatus | null>(null);
   const [processError, setProcessError] = useState<string | null>(null);
 
+  const createDefaultRegion = (meta: VideoMetadata): WatermarkRegion => {
+    const defaultW = Math.max(48, Math.round(meta.width * 0.22));
+    const defaultH = Math.max(32, Math.round(meta.height * 0.09));
+    return clampRegion(
+      {
+        id: 'reg-default',
+        label: 'Region 1',
+        x: Math.round(meta.width - defaultW - meta.width * 0.04),
+        y: Math.round(meta.height - defaultH - meta.height * 0.05),
+        w: defaultW,
+        h: defaultH,
+        startTime: null,
+        endTime: null,
+      },
+      meta.width,
+      meta.height
+    );
+  };
+
   const initializeVideoWorkspace = (meta: VideoMetadata) => {
     setVideo(meta);
     setJobId(null);
@@ -48,6 +68,7 @@ export default function App() {
     setProcessError(null);
 
     if (meta.suggestedRegion) {
+      setRemoveWatermarkEnabled(true);
       setRegions([
         clampRegion(
           {
@@ -60,24 +81,17 @@ export default function App() {
         ),
       ]);
     } else {
-      const defaultW = Math.max(48, Math.round(meta.width * 0.22));
-      const defaultH = Math.max(32, Math.round(meta.height * 0.09));
-      setRegions([
-        clampRegion(
-          {
-            id: 'reg-default',
-            label: 'Region 1',
-            x: Math.round(meta.width - defaultW - meta.width * 0.04),
-            y: Math.round(meta.height - defaultH - meta.height * 0.05),
-            w: defaultW,
-            h: defaultH,
-            startTime: null,
-            endTime: null,
-          },
-          meta.width,
-          meta.height
-        ),
-      ]);
+      setRemoveWatermarkEnabled(false);
+      setRegions([]);
+    }
+  };
+
+  const handleToggleRemoveWatermark = (enabled: boolean) => {
+    setRemoveWatermarkEnabled(enabled);
+    if (enabled && video && regions.length === 0) {
+      setRegions([createDefaultRegion(video)]);
+    } else if (!enabled) {
+      setRegions([]);
     }
   };
 
@@ -306,7 +320,8 @@ export default function App() {
   };
 
   const handleStartProcessing = async () => {
-    if (!video || (regions.length === 0 && upscale === 'original')) return;
+    const activeRegions = removeWatermarkEnabled ? regions : [];
+    if (!video || (activeRegions.length === 0 && upscale === 'original')) return;
     setProcessError(null);
 
     try {
@@ -315,7 +330,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           videoId: video.videoId,
-          regions,
+          regions: activeRegions,
           mode,
           upscale,
           detailEnhance,
@@ -373,6 +388,7 @@ export default function App() {
       fetch(`/api/videos/${video.videoId}`, { method: 'DELETE' }).catch(() => {});
     }
     setVideo(null);
+    setRemoveWatermarkEnabled(false);
     setRegions([]);
     setJobId(null);
     setJob(null);
@@ -445,6 +461,7 @@ export default function App() {
               >
                 <WatermarkEditor
                   video={video}
+                  removeWatermarkEnabled={removeWatermarkEnabled}
                   regions={regions}
                   mode={mode}
                   upscale={upscale}
@@ -454,7 +471,13 @@ export default function App() {
                   queuePosition={job?.queuePosition}
                   processProgress={job?.progress ?? 0}
                   processError={processError}
-                  onRegionsChange={setRegions}
+                  onRemoveWatermarkToggle={handleToggleRemoveWatermark}
+                  onRegionsChange={(next) => {
+                    if (next.length > 0 && !removeWatermarkEnabled) {
+                      setRemoveWatermarkEnabled(true);
+                    }
+                    setRegions(next);
+                  }}
                   onModeChange={setMode}
                   onUpscaleChange={setUpscale}
                   onDetailEnhanceChange={setDetailEnhance}
@@ -475,7 +498,7 @@ export default function App() {
                 <ComparisonResult
                   video={video}
                   job={job}
-                  regionsCount={regions.length}
+                  regionsCount={removeWatermarkEnabled ? regions.length : 0}
                   onEditRegions={() => {
                     setJob(null);
                     setJobId(null);

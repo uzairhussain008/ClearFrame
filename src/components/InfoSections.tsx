@@ -27,8 +27,8 @@ const SPECS = [
   { label: 'Max upload size', value: '300 MB per video (100% free)' },
   { label: 'Supported formats', value: 'MP4, MOV, WebM, MKV, AVI, M4V' },
   { label: 'Removal engines', value: 'Smart Inpaint (Delogo), Soft Blur, Mosaic' },
-  { label: 'Upscale targets', value: 'Original, 1080p, 2K, 4K UHD (Lanczos + CAS)' },
-  { label: 'Audio & privacy', value: 'Original audio preserved · Auto-deleted in 30 min' },
+  { label: 'Upscale targets', value: 'Original, 1080p, 2K, 4K UHD (NNEDI3 + CAS)' },
+  { label: 'Audio & privacy', value: 'Original audio preserved · Auto-deleted in 15 min' },
 ];
 
 const FAQS = [
@@ -38,7 +38,7 @@ const FAQS = [
   },
   {
     q: 'Does upscaling to 4K degrade the original video quality?',
-    a: 'No. ClearFrame uses high-precision Lanczos resampling with Contrast Adaptive Sharpening and visually lossless H.264 MP4 encoding (CRF 17), and never downscales if your source is already 4K or higher.',
+    a: 'No. ClearFrame uses NNEDI3 neural edge-directed reconstruction, deblocking, Lanczos resampling, and balanced adaptive sharpening with high-profile H.264 MP4 encoding (CRF 16–18), and never downscales if your source is already 4K or higher.',
   },
   {
     q: 'Which watermark removal method works best?',
@@ -50,7 +50,7 @@ const FAQS = [
   },
   {
     q: 'How long are uploaded videos stored?',
-    a: 'Temporary uploaded and processed video files are automatically deleted after 30 minutes or immediately when you switch videos.',
+    a: 'Temporary uploaded and processed video files are automatically deleted after 15 minutes or immediately when you switch videos.',
   },
 ];
 

@@ -29,13 +29,17 @@ import {
 
 const PORT = Number(process.env.PORT || 3000);
 const CPU_COUNT = Math.max(1, os.cpus().length);
+const TOTAL_MEM_MB = Math.max(512, Math.round(os.totalmem() / (1024 * 1024)));
+const LOW_MEM_HOST = TOTAL_MEM_MB < 1800;
 const MAX_CONCURRENT_JOBS = Math.max(
   1,
-  Number(process.env.MAX_CONCURRENT_JOBS) || Math.min(2, Math.max(1, Math.floor(CPU_COUNT / 2)))
+  Number(process.env.MAX_CONCURRENT_JOBS) ||
+    (TOTAL_MEM_MB <= 4096 ? 1 : Math.min(2, Math.max(1, Math.floor(CPU_COUNT / 2))))
 );
 const MAX_QUEUED_JOBS = Math.max(2, Number(process.env.MAX_QUEUED_JOBS) || 25);
+const DEFAULT_STORAGE_MB = Math.min(3584, Math.max(512, Math.floor(TOTAL_MEM_MB * 0.4)));
 const MAX_WORK_DIR_BYTES =
-  Math.max(512, Number(process.env.MAX_STORAGE_MB) || 3584) * 1024 * 1024;
+  Math.max(512, Number(process.env.MAX_STORAGE_MB) || DEFAULT_STORAGE_MB) * 1024 * 1024;
 const EXPIRY_TTL_MS = 15 * 60 * 1000;
 const MAX_JOB_RUNTIME_MS = 15 * 60 * 1000;
 const WORK_DIR = '/tmp/clearframe-studio';
@@ -480,17 +484,29 @@ function streamVideoFile(req: express.Request, res: express.Response, filePath: 
       'Accept-Ranges': 'bytes',
       'Content-Length': chunkSize,
       'Content-Type': contentType,
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'private, max-age=300',
     });
-    fs.createReadStream(filePath, { start, end }).pipe(res);
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(filePath, { start, end });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
   } else {
     res.writeHead(200, {
       'Content-Length': fileSize,
       'Accept-Ranges': 'bytes',
       'Content-Type': contentType,
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'private, max-age=300',
     });
-    fs.createReadStream(filePath).pipe(res);
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(filePath);
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
   }
 }
 
@@ -629,13 +645,13 @@ async function startServer(): Promise<void> {
         '- Supported Input Formats: MP4, MOV, WebM, MKV, AVI, M4V',
         '- Watermark Removal Engines: Smart Inpaint (delogo), Soft Blur (boxblur), Mosaic Mask',
         '- Multi-Region Selection: Up to 8 independent boxes with optional Start and End timestamps in seconds',
-        '- Video Upscaling: Original, 1080p Full HD, 2K QHD, and 4K UHD (3840x2160) via Lanczos resampling + Contrast Adaptive Sharpening, never downscaling higher-res footage',
-        '- Output & Audio: Visually lossless H.264 MP4 (CRF 17) with original audio track preserved and Before/After split slider comparison',
-        '- Privacy: Temporary uploads and exports are automatically deleted after 30 minutes or immediately on video reset',
+        '- Video Upscaling: Original, 1080p Full HD, 2K QHD, and 4K UHD via NNEDI3 neural edge-directed reconstruction, Lanczos resampling, and Adaptive Sharpening, preserving orientation and never downscaling higher-res footage',
+        '- Output & Audio: Visually lossless H.264 MP4 (CRF 16–18) with original audio track preserved and Before/After split slider comparison',
+        '- Privacy: Temporary uploads and exports are automatically deleted after 15 minutes or immediately on video reset',
         '',
         '## Direct Answers (AEO)',
         '- **Is ClearFrame completely free up to 300 MB?** Yes, 100% free with no account, credits, or export watermark.',
-        '- **Does 4K upscaling reduce original quality?** No, it uses Lanczos resampling with Contrast Adaptive Sharpening and visually lossless H.264 encoding (CRF 17).',
+        '- **Does 4K upscaling reduce original quality?** No, it uses NNEDI3 neural reconstruction, deblocking, Lanczos resampling, and balanced Adaptive Sharpening with H.264 encoding (CRF 16–18).',
         '- **Which watermark removal engine should I use?** Smart Inpaint for corner logos and static text; Soft Blur or Mosaic for moving or complex textured backgrounds.',
         '',
         '## Pages & Discovery',
@@ -1039,20 +1055,20 @@ async function startServer(): Promise<void> {
       .slice(0, 8)
       .map((r) => clampRegion(r, video.width, video.height));
     const nnediWeightsPath = fs.existsSync(NNEDI_WEIGHTS_PATH) ? NNEDI_WEIGHTS_PATH : undefined;
-    const { filterComplex, outputLabel, outputWidth, outputHeight, upscaled } =
-      buildFfmpegFilterGraph(
-        clampedRegions,
-        removalMode,
-        video.width,
-        video.height,
-        video.duration,
-        {
-          upscale: upscalePreset,
-          detailEnhance: detailEnhance !== false,
-          sarNormalize: video.needsSarNormalize,
-          nnediWeightsPath,
-        }
-      );
+    const primaryGraph = buildFfmpegFilterGraph(
+      clampedRegions,
+      removalMode,
+      video.width,
+      video.height,
+      video.duration,
+      {
+        upscale: upscalePreset,
+        detailEnhance: detailEnhance !== false,
+        sarNormalize: video.needsSarNormalize,
+        nnediWeightsPath,
+        useNnedi: !LOW_MEM_HOST,
+      }
+    );
 
     const jobId = crypto.randomUUID();
     const outputPath = path.join(OUTPUT_DIR, `${jobId}.mp4`);
@@ -1064,13 +1080,166 @@ async function startServer(): Promise<void> {
       status: 'queued',
       progress: 0,
       outputPath,
-      outputWidth,
-      outputHeight,
-      upscale: upscaled ? upscalePreset : 'original',
+      outputWidth: primaryGraph.outputWidth,
+      outputHeight: primaryGraph.outputHeight,
+      upscale: primaryGraph.upscaled ? upscalePreset : 'original',
       regionsCount: clampedRegions.length,
       startedAt: Date.now(),
     };
     jobs.set(jobId, job);
+
+    const runFfmpegAttempt = (opts: {
+      audioMode: 'auto' | 'aac' | 'none';
+      useNnedi: boolean;
+      safeFlags: boolean;
+    }): Promise<{ ok: boolean; timedOut: boolean; code: number | null; signal: NodeJS.Signals | null; stderrTail: string }> =>
+      new Promise((resolve) => {
+        const graph =
+          opts.useNnedi === !LOW_MEM_HOST
+            ? primaryGraph
+            : buildFfmpegFilterGraph(
+                clampedRegions,
+                removalMode,
+                video.width,
+                video.height,
+                video.duration,
+                {
+                  upscale: upscalePreset,
+                  detailEnhance: detailEnhance !== false,
+                  sarNormalize: video.needsSarNormalize,
+                  nnediWeightsPath,
+                  useNnedi: opts.useNnedi,
+                }
+              );
+
+        if (fs.existsSync(outputPath)) {
+          try {
+            fs.unlinkSync(outputPath);
+          } catch {
+            // Ignore cleanup failure before retry
+          }
+        }
+
+        const args: string[] = ['-y'];
+        if (opts.safeFlags) {
+          args.push('-err_detect', 'ignore_err', '-fflags', '+genpts+igndts', '-threads', '2', '-filter_threads', '1');
+        } else {
+          args.push('-threads', '0', '-filter_threads', '0');
+        }
+
+        args.push(
+          '-i',
+          video.filePath,
+          '-filter_complex',
+          graph.filterComplex,
+          '-map',
+          graph.outputLabel
+        );
+
+        if (video.hasAudio && opts.audioMode !== 'none') {
+          const canCopyAudio =
+            opts.audioMode === 'auto' && (video.audioCodec === 'aac' || video.audioCodec === 'mp3');
+          if (canCopyAudio) {
+            args.push('-map', '0:a?', '-c:a', 'copy');
+          } else {
+            args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000');
+          }
+        }
+
+        args.push(
+          '-c:v',
+          'libx264',
+          '-preset',
+          'veryfast',
+          '-profile:v',
+          'high',
+          '-level:v',
+          '5.1',
+          '-crf',
+          graph.upscaled ? '16' : '18',
+          '-maxrate',
+          graph.upscaled ? '28M' : '20M',
+          '-bufsize',
+          graph.upscaled ? '56M' : '40M',
+          '-g',
+          '60',
+          '-x264-params',
+          'rc-lookahead=16:sync-lookahead=0:aq-mode=2:aq-strength=0.9',
+          '-pix_fmt',
+          'yuv420p',
+          '-metadata:s:v:0',
+          'rotate=0',
+          '-avoid_negative_ts',
+          'make_zero',
+          '-max_muxing_queue_size',
+          '2048',
+          '-movflags',
+          '+faststart',
+          '-progress',
+          'pipe:1',
+          '-nostats',
+          outputPath
+        );
+
+        const child = spawn(FFMPEG_BIN, args);
+        activeChildren.add(child);
+        let settled = false;
+        let timedOut = false;
+        let stderrTail = '';
+        const totalUs = Math.max(100_000, Math.round(video.duration * 1_000_000));
+
+        const timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Ignore kill failure
+          }
+        }, MAX_JOB_RUNTIME_MS);
+
+        const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutHandle);
+          activeChildren.delete(child);
+          resolve({
+            ok: !timedOut && code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0,
+            timedOut,
+            code,
+            signal,
+            stderrTail,
+          });
+        };
+
+        child.stdout.on('data', (chunk) => {
+          const text = chunk.toString();
+          const lines = text.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('out_time_us=')) {
+              const us = Number(line.split('=')[1]);
+              if (Number.isFinite(us) && us > 0) {
+                const pct = Math.min(99, Math.max(2, Math.round((us / totalUs) * 100)));
+                job.progress = pct;
+              }
+            } else if (line.startsWith('progress=end')) {
+              job.progress = 99;
+            }
+          }
+        });
+
+        child.stderr.on('data', (chunk) => {
+          stderrTail = (stderrTail + chunk.toString()).slice(-1500);
+        });
+
+        child.on('error', (err) => {
+          stderrTail = (stderrTail + '\n' + err.message).slice(-1500);
+          finish(1, null);
+        });
+
+        child.on('close', (code, signal) => {
+          finish(code, signal);
+        });
+      });
 
     const clientIp = getClientIp(req);
     const enqueueResult = jobQueue.enqueue({
@@ -1081,128 +1250,80 @@ async function startServer(): Promise<void> {
         job.progress = 1;
         job.startedAt = Date.now();
       },
-      run: () =>
-        new Promise<void>((resolve) => {
-          if (!fs.existsSync(video.filePath)) {
-            job.status = 'failed';
-            job.error = 'Source video expired before processing started. Please upload again.';
-            job.finishedAt = Date.now();
-            resolve();
-            return;
-          }
+      run: async () => {
+        if (!fs.existsSync(video.filePath)) {
+          job.status = 'failed';
+          job.error = 'Source video expired before processing started. Please upload again.';
+          job.finishedAt = Date.now();
+          return;
+        }
 
-          const args = [
-            '-y',
-            '-threads',
-            '0',
-            '-filter_threads',
-            '0',
-            '-i',
-            video.filePath,
-            '-filter_complex',
-            filterComplex,
-            '-map',
-            outputLabel,
-          ];
+        // Attempt 1: Full-quality neural pipeline + fast audio copy when AAC/MP3
+        let result = await runFfmpegAttempt({
+          audioMode: 'auto',
+          useNnedi: !LOW_MEM_HOST,
+          safeFlags: false,
+        });
 
-          if (video.hasAudio) {
-            const canCopyAudio = video.audioCodec === 'aac' || video.audioCodec === 'mp3';
-            if (canCopyAudio) {
-              args.push('-map', '0:a?', '-c:a', 'copy');
-            } else {
-              args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '192k');
-            }
-          }
-
-          args.push(
-            '-c:v',
-            'libx264',
-            '-preset',
-            'superfast',
-            '-crf',
-            upscaled ? '16' : '18',
-            '-pix_fmt',
-            'yuv420p',
-            '-metadata:s:v:0',
-            'rotate=0',
-            '-avoid_negative_ts',
-            'make_zero',
-            '-movflags',
-            '+faststart',
-            '-progress',
-            'pipe:1',
-            '-nostats',
-            outputPath
+        // Attempt 2: Safe compatibility & memory recovery (re-encode audio, ignore corrupt DTS, fallback filter if OOM/NNEDI failed)
+        if (!result.ok && !result.timedOut) {
+          const likelyOomOrNnedi =
+            result.code === null ||
+            result.signal === 'SIGKILL' ||
+            /nnedi|out of memory|cannot allocate/i.test(result.stderrTail);
+          console.warn(
+            `[job ${jobId}] Attempt 1 failed (code=${result.code}, signal=${result.signal}), retrying in safe mode. Tail: ${result.stderrTail.slice(-350)}`
           );
-
-          const child = spawn(FFMPEG_BIN, args);
-          activeChildren.add(child);
-          let settled = false;
-          let timedOut = false;
-          const totalUs = Math.max(100_000, Math.round(video.duration * 1_000_000));
-
-          const timeoutHandle = setTimeout(() => {
-            timedOut = true;
-            try {
-              child.kill('SIGKILL');
-            } catch {
-              // Ignore kill failure
-            }
-          }, MAX_JOB_RUNTIME_MS);
-
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeoutHandle);
-            activeChildren.delete(child);
-            resolve();
-          };
-
-          child.stdout.on('data', (chunk) => {
-            const text = chunk.toString();
-            const lines = text.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('out_time_us=')) {
-                const us = Number(line.split('=')[1]);
-                if (Number.isFinite(us) && us > 0) {
-                  const pct = Math.min(99, Math.max(2, Math.round((us / totalUs) * 100)));
-                  job.progress = pct;
-                }
-              } else if (line.startsWith('progress=end')) {
-                job.progress = 99;
-              }
-            }
+          job.progress = 2;
+          result = await runFfmpegAttempt({
+            audioMode: video.hasAudio ? 'aac' : 'none',
+            useNnedi: !LOW_MEM_HOST && !likelyOomOrNnedi,
+            safeFlags: true,
           });
+        }
 
-          child.stderr.on('data', () => {
-            // Drain stderr so child process pipe never blocks
+        // Attempt 3: If audio stream itself is corrupt/unreadable, export clean video without audio
+        if (!result.ok && !result.timedOut && video.hasAudio) {
+          console.warn(
+            `[job ${jobId}] Attempt 2 failed (code=${result.code}), retrying video-only fallback. Tail: ${result.stderrTail.slice(-350)}`
+          );
+          job.progress = 2;
+          result = await runFfmpegAttempt({
+            audioMode: 'none',
+            useNnedi: false,
+            safeFlags: true,
           });
+        }
 
-          child.on('error', (err) => {
-            job.status = 'failed';
-            job.error = err.message;
-            job.finishedAt = Date.now();
-            finish();
-          });
+        job.finishedAt = Date.now();
+        if (result.ok) {
+          job.status = 'completed';
+          job.progress = 100;
+          job.outputSize = fs.statSync(outputPath).size;
+          return;
+        }
 
-          child.on('close', (code) => {
-            job.finishedAt = Date.now();
-            if (!timedOut && code === 0 && fs.existsSync(outputPath)) {
-              job.status = 'completed';
-              job.progress = 100;
-              job.outputSize = fs.statSync(outputPath).size;
-            } else {
-              job.status = 'failed';
-              job.error = timedOut
-                ? 'Processing timed out. Try a shorter clip or lower target resolution.'
-                : 'FFmpeg could not process this video. Check region bounds or format.';
-              if (fs.existsSync(outputPath)) {
-                fs.unlink(outputPath, () => {});
-              }
-            }
-            finish();
-          });
-        }),
+        if (fs.existsSync(outputPath)) {
+          fs.unlink(outputPath, () => {});
+        }
+        console.error(
+          `[job ${jobId}] FFmpeg failed permanently (code=${result.code}, signal=${result.signal}): ${result.stderrTail}`
+        );
+        job.status = 'failed';
+        if (result.timedOut) {
+          job.error = 'Processing timed out. Try a shorter clip or lower target resolution.';
+        } else {
+          const lastErrLine = result.stderrTail
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(-2)
+            .join(' — ');
+          job.error = lastErrLine
+            ? `FFmpeg could not process this video (${lastErrLine.slice(0, 140)}).`
+            : 'FFmpeg could not process this video. Check region bounds or format.';
+        }
+      },
     });
 
     if (!enqueueResult.accepted) {

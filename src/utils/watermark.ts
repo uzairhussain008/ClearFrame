@@ -308,6 +308,7 @@ export interface BuildFilterOptions {
   detailEnhance?: boolean;
   sarNormalize?: boolean;
   nnediWeightsPath?: string;
+  useNnedi?: boolean;
 }
 
 function escapeFfmpegPath(filePath: string): string {
@@ -336,10 +337,13 @@ export function buildFfmpegFilterGraph(
   const steps: string[] = [];
   let currentLabel = '0:v';
 
-  // Normalize anamorphic pixels to 1:1 square display pixels before coordinate masks or scaling
+  // Normalize device pixel formats (e.g. 10-bit HDR, yuvj420p, rgba, yuva420p) before filter stages
   if (options?.sarNormalize) {
-    steps.push(`[${currentLabel}]scale=${safeW}:${safeH}:flags=lanczos,setsar=1[v_sar]`);
-    currentLabel = 'v_sar';
+    steps.push(`[${currentLabel}]format=yuv420p,scale=${safeW}:${safeH}:flags=lanczos,setsar=1[v_norm]`);
+    currentLabel = 'v_norm';
+  } else {
+    steps.push(`[${currentLabel}]format=yuv420p[v_norm]`);
+    currentLabel = 'v_norm';
   }
 
   clamped.forEach((region, idx) => {
@@ -397,15 +401,16 @@ export function buildFfmpegFilterGraph(
     if (detailEnhance) {
       // Stage 1: Remove block/compression artifacts before any enlargement
       filterStages.push('deblock=filter=weak:block=4');
-      // Stage 2: Gentle spatio-temporal denoising to remove compression grain while preserving edges
+      // Stage 2: Gentle spatio-temporal denoising to reduce compression grain without smearing text or textures
       filterStages.push(
         scaleRatio >= 1.8 || sourcePixels <= 640 * 640
-          ? 'hqdn3d=1.4:1.0:2.6:2.0'
-          : 'hqdn3d=1.0:0.7:1.8:1.4'
+          ? 'hqdn3d=1.1:0.8:1.6:1.2'
+          : 'hqdn3d=0.6:0.4:0.9:0.7'
       );
 
       // Stage 3: 2D NNEDI3 Neural Edge-Directed Super-Resolution (2x vertical + 2x horizontal)
-      if (options?.nnediWeightsPath && sourcePixels <= 1920 * 1080 * 1.05) {
+      const useNnedi = options?.useNnedi !== false;
+      if (useNnedi && options?.nnediWeightsPath && sourcePixels <= 1920 * 1080 * 1.05) {
         const weights = escapeFfmpegPath(options.nnediWeightsPath);
         const isSmallSource = sourcePixels <= 640 * 640;
         const nns = isSmallSource ? 'n32' : 'n16';
@@ -421,10 +426,14 @@ export function buildFfmpegFilterGraph(
         );
       }
 
-      // Stage 4: Exact aspect-safe Lanczos target sizing, square SAR=1, and Contrast Adaptive Sharpening
+      // Stage 4: Exact aspect-safe Lanczos target sizing, square SAR=1, and natural balanced sharpening without halos
       filterStages.push(`scale=${targetDims.width}:${targetDims.height}:flags=lanczos`);
       filterStages.push('setsar=1');
-      filterStages.push(`cas=strength=${scaleRatio >= 1.8 ? '0.42' : '0.35'}`);
+      filterStages.push(
+        scaleRatio >= 1.8
+          ? 'unsharp=5:5:0.38:3:3:0.10,cas=strength=0.28'
+          : 'unsharp=5:5:0.30:3:3:0.08,cas=strength=0.24'
+      );
     } else {
       filterStages.push(`scale=${targetDims.width}:${targetDims.height}:flags=lanczos`);
       filterStages.push('setsar=1');

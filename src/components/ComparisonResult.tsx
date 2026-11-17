@@ -33,11 +33,43 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
 }) => {
   const beforeRef = useRef<HTMLVideoElement | null>(null);
   const afterRef = useRef<HTMLVideoElement | null>(null);
+  const savedTimeRef = useRef(0);
 
   const [viewMode, setViewMode] = useState<'split' | 'side'>('split');
   const [splitPercent, setSplitPercent] = useState(50);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [outputPreviewError, setOutputPreviewError] = useState(false);
+
+  React.useEffect(() => {
+    setOutputPreviewError(false);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    savedTimeRef.current = 0;
+  }, [job.outputUrl]);
+
+  const restoreFrameTime = (el: HTMLVideoElement | null) => {
+    if (!el) return;
+    const targetTime = savedTimeRef.current;
+    if (targetTime > 0.05 && el.paused && Math.abs(el.currentTime - targetTime) > 0.03) {
+      try {
+        const safeMax = Math.max(0.05, (el.duration || video.duration) - 0.05);
+        el.currentTime = Math.min(targetTime, safeMax);
+      } catch {
+        // Ignore seek errors before stream stabilizes
+      }
+    }
+  };
+
+  const handleSwitchViewMode = (nextMode: 'split' | 'side') => {
+    if (nextMode === viewMode) return;
+    const activeTime = afterRef.current?.currentTime ?? beforeRef.current?.currentTime ?? currentTime;
+    savedTimeRef.current = activeTime;
+    afterRef.current?.pause();
+    beforeRef.current?.pause();
+    setIsPlaying(false);
+    setViewMode(nextMode);
+  };
 
   const syncPlayState = () => {
     const before = beforeRef.current;
@@ -48,7 +80,10 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
       before.currentTime = after.currentTime;
       Promise.all([after.play(), before.play()])
         .then(() => setIsPlaying(true))
-        .catch(() => {});
+        .catch(() => {
+          // If one stream blocks autoplay, try playing output alone
+          after.play().then(() => setIsPlaying(true)).catch(() => {});
+        });
     } else {
       after.pause();
       before.pause();
@@ -58,10 +93,24 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = Number(e.target.value);
+    savedTimeRef.current = val;
     if (afterRef.current) afterRef.current.currentTime = val;
     if (beforeRef.current) beforeRef.current.currentTime = val;
     setCurrentTime(val);
   };
+
+  const handleAfterTimeUpdate = () => {
+    const after = afterRef.current;
+    if (!after) return;
+    savedTimeRef.current = after.currentTime;
+    setCurrentTime(after.currentTime);
+    if (beforeRef.current && Math.abs(beforeRef.current.currentTime - after.currentTime) > 0.2) {
+      beforeRef.current.currentTime = after.currentTime;
+    }
+  };
+
+  const displayW = job.outputWidth ?? video.width;
+  const displayH = job.outputHeight ?? video.height;
 
   return (
     <div
@@ -90,7 +139,7 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
           <div className="flex items-center rounded-lg bg-[#0B1120] p-1">
             <button
               type="button"
-              onClick={() => setViewMode('split')}
+              onClick={() => handleSwitchViewMode('split')}
               className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 viewMode === 'split'
                   ? 'bg-slate-800 text-sky-300'
@@ -102,7 +151,7 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('side')}
+              onClick={() => handleSwitchViewMode('side')}
               className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 viewMode === 'side'
                   ? 'bg-slate-800 text-sky-300'
@@ -116,6 +165,12 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
         </div>
       </div>
 
+      {outputPreviewError && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
+          Your device browser could not preview the {displayW}×{displayH} stream inline, but the processed file is ready to download below.
+        </p>
+      )}
+
       {/* Video Comparison Viewport */}
       {viewMode === 'split' ? (
         <div className="space-y-2">
@@ -127,9 +182,9 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
             <div
               className="relative mx-auto w-full select-none"
               style={{
-                aspectRatio: `${video.width} / ${video.height}`,
+                aspectRatio: `${displayW} / ${displayH}`,
                 maxHeight: '400px',
-                maxWidth: `calc(400px * ${video.width} / ${video.height})`,
+                maxWidth: `calc(400px * ${displayW} / ${displayH})`,
               }}
             >
               {/* Cleaned Output Layer (Right side / Base) */}
@@ -137,11 +192,14 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
                 ref={afterRef}
                 src={job.outputUrl}
                 playsInline
-                preload="metadata"
-                onEnded={() => setIsPlaying(false)}
-                onTimeUpdate={() => {
-                  if (afterRef.current) setCurrentTime(afterRef.current.currentTime);
+                preload="auto"
+                onLoadedData={() => restoreFrameTime(afterRef.current)}
+                onError={() => setOutputPreviewError(true)}
+                onEnded={() => {
+                  beforeRef.current?.pause();
+                  setIsPlaying(false);
                 }}
+                onTimeUpdate={handleAfterTimeUpdate}
                 className="h-full w-full object-contain"
               />
 
@@ -151,7 +209,8 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
                 src={video.previewUrl}
                 muted
                 playsInline
-                preload="metadata"
+                preload="auto"
+                onLoadedData={() => restoreFrameTime(beforeRef.current)}
                 style={{ clipPath: `inset(0 ${100 - splitPercent}% 0 0)` }}
                 className="pointer-events-none absolute inset-0 h-full w-full object-contain"
               />
@@ -185,35 +244,48 @@ export const ComparisonResult: React.FC<ComparisonResultProps> = ({
             <div className="border-b border-slate-800 px-3 py-2 text-xs font-medium text-slate-300">
               Original
             </div>
-            <video
-              ref={beforeRef}
-              src={video.previewUrl}
-              muted
-              playsInline
-              preload="metadata"
-              style={{ aspectRatio: `${video.width} / ${video.height}`, maxHeight: '360px' }}
-              className="mx-auto w-full object-contain"
-            />
+            <div className="flex items-center justify-center bg-slate-950">
+              <video
+                ref={beforeRef}
+                src={video.previewUrl}
+                muted
+                playsInline
+                preload="auto"
+                onLoadedData={() => restoreFrameTime(beforeRef.current)}
+                style={{
+                  aspectRatio: `${video.width} / ${video.height}`,
+                  maxHeight: '360px',
+                  maxWidth: `calc(360px * ${video.width} / ${video.height})`,
+                }}
+                className="mx-auto w-full object-contain"
+              />
+            </div>
           </div>
           <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
             <div className="border-b border-slate-800 px-3 py-2 text-xs font-medium text-sky-400">
               Clean Output
             </div>
-            <video
-              ref={afterRef}
-              src={job.outputUrl}
-              playsInline
-              preload="metadata"
-              onEnded={() => setIsPlaying(false)}
-              onTimeUpdate={() => {
-                if (afterRef.current) setCurrentTime(afterRef.current.currentTime);
-              }}
-              style={{
-                aspectRatio: `${job.outputWidth ?? video.width} / ${job.outputHeight ?? video.height}`,
-                maxHeight: '360px',
-              }}
-              className="mx-auto w-full object-contain"
-            />
+            <div className="flex items-center justify-center bg-slate-950">
+              <video
+                ref={afterRef}
+                src={job.outputUrl}
+                playsInline
+                preload="auto"
+                onLoadedData={() => restoreFrameTime(afterRef.current)}
+                onError={() => setOutputPreviewError(true)}
+                onEnded={() => {
+                  beforeRef.current?.pause();
+                  setIsPlaying(false);
+                }}
+                onTimeUpdate={handleAfterTimeUpdate}
+                style={{
+                  aspectRatio: `${displayW} / ${displayH}`,
+                  maxHeight: '360px',
+                  maxWidth: `calc(360px * ${displayW} / ${displayH})`,
+                }}
+                className="mx-auto w-full object-contain"
+              />
+            </div>
           </div>
         </div>
       )}
