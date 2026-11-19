@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Header } from './components/Header';
 import { UploadDropzone } from './components/UploadDropzone';
 import { Footer, InfoSections } from './components/InfoSections';
+import { AdBannerSlot } from './components/AdBannerSlot';
 
 const WatermarkEditor = lazy(() =>
   import('./components/WatermarkEditor').then((m) => ({ default: m.WatermarkEditor }))
@@ -1033,8 +1034,31 @@ export default function App() {
           </div>
         </section>
 
-        <div className="mt-16">
+        <div className="mt-8 flex justify-center">
+          <AdBannerSlot
+            adKey="e4c73dde1517c4ed05244df3fca96f66"
+            scriptSrc="https://bicea.org/22/e4c73dde1517c4ed05244df3fca96f66"
+            width={320}
+            height={50}
+            className="min-h-[50px] w-[320px]"
+          />
+        </div>
+
+        <div className="mt-12 grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1fr)_160px]">
           <InfoSections />
+          <div
+            role="complementary"
+            aria-label="Sponsored banner"
+            className="mx-auto flex justify-center lg:sticky lg:top-6"
+          >
+            <AdBannerSlot
+              adKey="6d47a6b0b83fb4794141a766961e1af2"
+              scriptSrc="https://bicea.org/22/6d47a6b0b83fb4794141a766961e1af2"
+              width={160}
+              height={600}
+              className="min-h-[600px] w-[160px]"
+            />
+          </div>
         </div>
       </main>
 
