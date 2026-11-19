@@ -11,11 +11,13 @@ import {
   MAX_VIDEO_SIZE_BYTES,
   MAX_VIDEO_SIZE_MB,
   SUPPORTED_VIDEO_EXTENSIONS,
+  buildAiPreprocessFilterGraph,
   buildFfmpegFilterGraph,
   clampRegion,
   getFileExtension,
   resolveDisplayDimensions,
   type RemovalMode,
+  type UpscaleEngine,
   type UpscalePreset,
   type VideoMetadata,
   type WatermarkRegion,
@@ -26,6 +28,15 @@ import {
   selectEvictionsForBudget,
   type StorageArtifact,
 } from './src/utils/serverGuard.ts';
+import {
+  AI_MAX_DURATION_SEC,
+  AI_MAX_VIDEO_BYTES,
+  AI_MAX_VIDEO_MB,
+  ComfyFallbackError,
+  checkComfySystemStats,
+  runComfyUpscaleJob,
+} from './src/utils/comfyServer.ts';
+import { checkAiVideoLimits, type AiClientLimits } from './src/utils/webgpuUpscaler.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const CPU_COUNT = Math.max(1, os.cpus().length);
@@ -37,6 +48,11 @@ const MAX_CONCURRENT_JOBS = Math.max(
     (TOTAL_MEM_MB <= 4096 ? 1 : Math.min(2, Math.max(1, Math.floor(CPU_COUNT / 2))))
 );
 const MAX_QUEUED_JOBS = Math.max(2, Number(process.env.MAX_QUEUED_JOBS) || 25);
+const AI_WEBGPU_LIMITS: AiClientLimits = {
+  maxDurationSec: Math.max(5, Number(process.env.AI_WEBGPU_MAX_DURATION_SEC) || 30),
+  maxHeight: Math.max(360, Number(process.env.AI_WEBGPU_MAX_HEIGHT) || 720),
+  maxSizeMb: Math.max(10, Number(process.env.AI_WEBGPU_MAX_SIZE_MB) || 100),
+};
 const DEFAULT_STORAGE_MB = Math.min(3584, Math.max(512, Math.floor(TOTAL_MEM_MB * 0.4)));
 const MAX_WORK_DIR_BYTES =
   Math.max(512, Number(process.env.MAX_STORAGE_MB) || DEFAULT_STORAGE_MB) * 1024 * 1024;
@@ -45,8 +61,6 @@ const MAX_JOB_RUNTIME_MS = 15 * 60 * 1000;
 const WORK_DIR = '/tmp/clearframe-studio';
 const UPLOAD_DIR = path.join(WORK_DIR, 'uploads');
 const OUTPUT_DIR = path.join(WORK_DIR, 'outputs');
-const SAMPLE_DIR = path.join(WORK_DIR, 'sample');
-const SAMPLE_PATH = path.join(SAMPLE_DIR, 'sample-watermarked.mp4');
 const NNEDI_WEIGHTS_PATH = path.resolve(process.cwd(), 'models', 'nnedi3_weights.bin');
 
 const require = createRequire(import.meta.url);
@@ -78,19 +92,10 @@ const FFMPEG_STATIC_PATH = (() => {
   }
 })();
 
-const FFPROBE_STATIC_PATH = (() => {
-  try {
-    const mod = require('ffprobe-static') as { path?: string } | undefined;
-    return mod?.path ?? null;
-  } catch {
-    return null;
-  }
-})();
-
 const FFMPEG_BIN = resolveExecutable(process.env.FFMPEG_PATH, FFMPEG_STATIC_PATH, 'ffmpeg');
-const FFPROBE_BIN = resolveExecutable(process.env.FFPROBE_PATH, FFPROBE_STATIC_PATH, 'ffprobe');
+const FFPROBE_BIN = resolveExecutable(process.env.FFPROBE_PATH, null, 'ffprobe');
 
-for (const dir of [WORK_DIR, UPLOAD_DIR, OUTPUT_DIR, SAMPLE_DIR]) {
+for (const dir of [WORK_DIR, UPLOAD_DIR, OUTPUT_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -108,7 +113,6 @@ interface StoredVideo {
   hasAudio: boolean;
   audioCodec?: string;
   createdAt: number;
-  isSample?: boolean;
 }
 
 interface JobRecord {
@@ -123,6 +127,8 @@ interface JobRecord {
   outputWidth?: number;
   outputHeight?: number;
   upscale: UpscalePreset;
+  upscaleEngine: UpscaleEngine;
+  fallbackAvailable?: boolean;
   regionsCount: number;
   startedAt: number;
   finishedAt?: number;
@@ -140,7 +146,17 @@ interface ChunkUploadSession {
 const videos = new Map<string, StoredVideo>();
 const jobs = new Map<string, JobRecord>();
 const uploadSessions = new Map<string, ChunkUploadSession>();
+const activeAiJobsByIp = new Map<string, string>();
+const aiTempSourcePaths = new Map<string, string>();
 const activeChildren = new Set<ChildProcess>();
+
+function releaseAiIpLock(jobId: string): void {
+  for (const [ip, activeJobId] of activeAiJobsByIp.entries()) {
+    if (activeJobId === jobId) {
+      activeAiJobsByIp.delete(ip);
+    }
+  }
+}
 
 const jobQueue = new BoundedJobQueue({
   maxConcurrent: MAX_CONCURRENT_JOBS,
@@ -160,9 +176,9 @@ const jobSubmitLimiter = new SlidingWindowRateLimiter({
   windowMs: 5 * 60 * 1000,
   maxRequests: Number(process.env.RATE_LIMIT_JOBS) || 15,
 });
-const sampleLimiter = new SlidingWindowRateLimiter({
+const aiCheckLimiter = new SlidingWindowRateLimiter({
   windowMs: 5 * 60 * 1000,
-  maxRequests: Number(process.env.RATE_LIMIT_SAMPLE) || 20,
+  maxRequests: Number(process.env.RATE_LIMIT_AI_CHECK) || 30,
 });
 
 function getClientIp(req: express.Request): string {
@@ -217,7 +233,7 @@ function evictArtifactById(artifactId: string): void {
     const id = artifactId.slice(4);
     const video = videos.get(id);
     if (video) {
-      if (!video.isSample && fs.existsSync(video.filePath)) {
+      if (fs.existsSync(video.filePath)) {
         fs.unlink(video.filePath, () => {});
       }
       videos.delete(id);
@@ -231,6 +247,12 @@ function evictArtifactById(artifactId: string): void {
       if (job.outputPath && fs.existsSync(job.outputPath)) {
         fs.unlink(job.outputPath, () => {});
       }
+      const aiSrc = aiTempSourcePaths.get(id);
+      if (aiSrc && fs.existsSync(aiSrc)) {
+        fs.unlink(aiSrc, () => {});
+      }
+      aiTempSourcePaths.delete(id);
+      releaseAiIpLock(id);
       jobs.delete(id);
     }
     return;
@@ -251,7 +273,6 @@ function ensureStorageBudget(incomingBytes: number): boolean {
   const artifacts: StorageArtifact[] = [];
 
   for (const [id, video] of videos.entries()) {
-    if (video.isSample) continue;
     artifacts.push({
       id: `vid:${id}`,
       sizeBytes: video.size,
@@ -312,6 +333,82 @@ function runProcess(bin: string, args: string[]): Promise<{ stdout: string; stde
   });
 }
 
+async function runFfmpegProbeStderr(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8');
+    });
+    child.on('error', (err) => reject(err));
+    child.on('close', () => resolve(stderr));
+  });
+}
+
+async function probeVideoWithFfmpegFallback(filePath: string): Promise<{
+  width: number;
+  height: number;
+  needsSarNormalize: boolean;
+  rotation: number;
+  duration: number;
+  fps: number;
+  hasAudio: boolean;
+  audioCodec?: string;
+}> {
+  const stderr = await runFfmpegProbeStderr(['-hide_banner', '-i', filePath]);
+
+  const videoLineMatch = stderr.match(/Stream #0:\d+[^\n]*Video:\s*([^\n]+)/i);
+  if (!videoLineMatch) {
+    throw new Error('No readable video stream found in the uploaded file.');
+  }
+  const videoLine = videoLineMatch[1];
+  const dimMatch = videoLine.match(/\b(\d{2,5})x(\d{2,5})\b(?:\s*\[SAR\s+(\d+:\d+))?/i);
+  if (!dimMatch) {
+    throw new Error('Could not read video dimensions from uploaded file.');
+  }
+
+  const rawW = Number(dimMatch[1]);
+  const rawH = Number(dimMatch[2]);
+  const sar = dimMatch[3];
+
+  let rawRotation = 0;
+  const dmRotMatch = stderr.match(/displaymatrix:\s*rotation of\s*([-+]?\d+(?:\.\d+)?)\s*degrees/i);
+  const tagRotMatch = stderr.match(/rotate\s*:\s*([-+]?\d+)/i);
+  if (dmRotMatch) rawRotation = Number(dmRotMatch[1]);
+  else if (tagRotMatch) rawRotation = Number(tagRotMatch[1]);
+
+  const display = resolveDisplayDimensions(rawW, rawH, sar, rawRotation);
+
+  let duration = 5;
+  const durMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i);
+  if (durMatch) {
+    const parsedDur =
+      Number(durMatch[1]) * 3600 + Number(durMatch[2]) * 60 + Number(durMatch[3]);
+    if (Number.isFinite(parsedDur) && parsedDur > 0) duration = parsedDur;
+  }
+
+  let fps = 30;
+  const fpsMatch = videoLine.match(/\b(\d+(?:\.\d+)?)\s*(?:fps|tbr)\b/i);
+  if (fpsMatch) {
+    const parsedFps = Number(fpsMatch[1]);
+    if (Number.isFinite(parsedFps) && parsedFps > 0.5) {
+      fps = Math.round(parsedFps * 100) / 100;
+    }
+  }
+
+  const audioMatch = stderr.match(/Stream #0:\d+[^\n]*Audio:\s*([a-z0-9_]+)/i);
+  return {
+    width: display.width,
+    height: display.height,
+    needsSarNormalize: display.needsSarNormalize,
+    rotation: display.rotation,
+    duration,
+    fps,
+    hasAudio: Boolean(audioMatch),
+    audioCodec: audioMatch?.[1]?.toLowerCase(),
+  };
+}
+
 async function probeVideo(filePath: string): Promise<{
   width: number;
   height: number;
@@ -322,15 +419,21 @@ async function probeVideo(filePath: string): Promise<{
   hasAudio: boolean;
   audioCodec?: string;
 }> {
-  const { stdout } = await runProcess(FFPROBE_BIN, [
-    '-v',
-    'quiet',
-    '-print_format',
-    'json',
-    '-show_format',
-    '-show_streams',
-    filePath,
-  ]);
+  let stdout: string;
+  try {
+    const res = await runProcess(FFPROBE_BIN, [
+      '-v',
+      'quiet',
+      '-print_format',
+      'json',
+      '-show_format',
+      '-show_streams',
+      filePath,
+    ]);
+    stdout = res.stdout;
+  } catch {
+    return probeVideoWithFfmpegFallback(filePath);
+  }
 
   const parsed = JSON.parse(stdout) as {
     streams?: Array<{
@@ -392,62 +495,54 @@ async function probeVideo(filePath: string): Promise<{
   };
 }
 
-let sampleGenerationPromise: Promise<void> | null = null;
-
-async function ensureSampleVideo(): Promise<void> {
-  if (fs.existsSync(SAMPLE_PATH) && fs.statSync(SAMPLE_PATH).size > 1024) {
-    return;
-  }
-  if (sampleGenerationPromise) {
-    return sampleGenerationPromise;
-  }
-
-  sampleGenerationPromise = (async () => {
-    // Clean scenic animated background with an unmistakable corner watermark box (pure drawbox for universal FFmpeg compatibility)
-    const drawParts = [
-      'drawbox=x=0:y=0:w=1280:h=240:color=#0f172a@0.85:t=fill',
-      'drawbox=x=0:y=240:w=1280:h=240:color=#1e3a8a@0.75:t=fill',
-      'drawbox=x=0:y=480:w=1280:h=240:color=#0369a1@0.75:t=fill',
-      'drawbox=x=mod(t*220\\,1280)-180:y=160:w=220:h=400:color=#38bdf8@0.35:t=fill',
-      'drawbox=x=1280-mod(t*160\\,1280):y=220:w=180:h=260:color=#e0f2fe@0.25:t=fill',
-      'drawbox=x=906:y=616:w=326:h=60:color=#ffffff@0.25:t=fill',
-      'drawbox=x=906:y=616:w=326:h=60:color=#ffffff@0.75:t=3',
-      'drawbox=x=924:y=632:w=28:h=28:color=#38bdf8@0.95:t=fill',
-      'drawbox=x=966:y=636:w=246:h=8:color=#ffffff@0.92:t=fill',
-      'drawbox=x=966:y=650:w=180:h=8:color=#bae6fd@0.85:t=fill',
-    ];
-
-    await runProcess(FFMPEG_BIN, [
-      '-y',
-      '-f',
-      'lavfi',
-      '-i',
-      'color=c=#0f172a:s=1280x720:d=5:r=30',
-      '-f',
-      'lavfi',
-      '-i',
-      'sine=frequency=440:sample_rate=44100:duration=5',
-      '-vf',
-      drawParts.join(','),
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '96k',
-      '-movflags',
-      '+faststart',
-      SAMPLE_PATH,
+async function probeVideoFrameTimestamps(filePath: string): Promise<number[] | undefined> {
+  try {
+    const { stdout } = await runProcess(FFPROBE_BIN, [
+      '-v',
+      'quiet',
+      '-select_streams',
+      'v:0',
+      '-show_entries',
+      'packet=pts_time',
+      '-of',
+      'csv=p=0',
+      filePath,
     ]);
-  })().finally(() => {
-    sampleGenerationPromise = null;
-  });
+    const raw = stdout
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((val) => Number.isFinite(val) && val >= 0)
+      .sort((a, b) => a - b);
+    if (raw.length >= 2) return raw.slice(0, 4000);
+  } catch {
+    // Fallback to ffmpeg showinfo timestamp probe when ffprobe is unavailable
+  }
 
-  return sampleGenerationPromise;
+  try {
+    const stderr = await runFfmpegProbeStderr([
+      '-hide_banner',
+      '-v',
+      'info',
+      '-i',
+      filePath,
+      '-map',
+      '0:v:0',
+      '-vf',
+      'showinfo',
+      '-f',
+      'null',
+      '-',
+    ]);
+    const matches = Array.from(stderr.matchAll(/\bpts_time:\s*([\d.]+)/g));
+    const raw = matches
+      .map((m) => Number(m[1]))
+      .filter((val) => Number.isFinite(val) && val >= 0)
+      .sort((a, b) => a - b);
+    if (raw.length >= 2) return raw.slice(0, 4000);
+  } catch {
+    // Ignore fallback probe failure
+  }
+  return undefined;
 }
 
 function streamVideoFile(req: express.Request, res: express.Response, filePath: string): void {
@@ -514,7 +609,7 @@ function cleanupExpiredFiles(): void {
   const cutoff = Date.now() - EXPIRY_TTL_MS;
   for (const [id, video] of videos.entries()) {
     if (video.createdAt < cutoff && !isVideoProtected(id)) {
-      if (!video.isSample && fs.existsSync(video.filePath)) {
+      if (fs.existsSync(video.filePath)) {
         fs.unlink(video.filePath, () => {});
       }
       videos.delete(id);
@@ -522,10 +617,17 @@ function cleanupExpiredFiles(): void {
   }
   for (const [jobId, job] of jobs.entries()) {
     const isActive = job.status === 'queued' || job.status === 'processing';
-    if (!isActive && (job.finishedAt ?? job.startedAt) < cutoff) {
+    const isStaleAi = job.upscaleEngine === 'ai' && isActive && job.startedAt < cutoff;
+    if ((!isActive || isStaleAi) && (job.finishedAt ?? job.startedAt) < cutoff) {
       if (job.outputPath && fs.existsSync(job.outputPath)) {
         fs.unlink(job.outputPath, () => {});
       }
+      const aiSrc = aiTempSourcePaths.get(jobId);
+      if (aiSrc && fs.existsSync(aiSrc)) {
+        fs.unlink(aiSrc, () => {});
+      }
+      aiTempSourcePaths.delete(jobId);
+      releaseAiIpLock(jobId);
       jobs.delete(jobId);
     }
   }
@@ -541,7 +643,7 @@ function cleanupExpiredFiles(): void {
   uploadInitLimiter.prune(now);
   uploadChunkLimiter.prune(now);
   jobSubmitLimiter.prune(now);
-  sampleLimiter.prune(now);
+  aiCheckLimiter.prune(now);
 }
 
 cleanOrphanedWorkFiles();
@@ -597,7 +699,45 @@ async function startServer(): Promise<void> {
     res.json({
       ok: true,
       maxUploadMb: MAX_VIDEO_SIZE_MB,
+      aiLimits: {
+        maxSizeMb: AI_MAX_VIDEO_MB,
+        maxDurationSec: AI_MAX_DURATION_SEC,
+      },
+      aiWebGpuLimits: AI_WEBGPU_LIMITS,
       queue: jobQueue.getStats(),
+    });
+  });
+
+  app.post('/api/ai/check', async (req, res) => {
+    if (!enforceRateLimit(aiCheckLimiter, req, res, 'Too many Colab GPU connection checks.')) {
+      return;
+    }
+    const comfyUrl = (req.body as { comfyUrl?: unknown } | undefined)?.comfyUrl;
+    if (typeof comfyUrl !== 'string') {
+      res.status(400).json({ ok: false, error: 'Paste your Colab HTTPS tunnel URL first.' });
+      return;
+    }
+    const result = await checkComfySystemStats(comfyUrl);
+    if (!result.ok) {
+      res.status(400).json({
+        ok: false,
+        error: result.error || 'Could not reach ComfyUI GPU server.',
+        limits: {
+          maxSizeMb: AI_MAX_VIDEO_MB,
+          maxDurationSec: AI_MAX_DURATION_SEC,
+        },
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      gpuName: result.gpuName,
+      vramGb: result.vramGb,
+      comfyVersion: result.comfyVersion,
+      limits: {
+        maxSizeMb: AI_MAX_VIDEO_MB,
+        maxDurationSec: AI_MAX_DURATION_SEC,
+      },
     });
   });
 
@@ -930,61 +1070,6 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.post('/api/sample', async (req, res) => {
-    if (!enforceRateLimit(sampleLimiter, req, res, 'Too many sample requests from this IP.')) {
-      return;
-    }
-    try {
-      await ensureSampleVideo();
-      const stat = fs.statSync(SAMPLE_PATH);
-      const info = await probeVideo(SAMPLE_PATH);
-      const videoId = `sample-${crypto.randomUUID().slice(0, 8)}`;
-
-      const stored: StoredVideo = {
-        videoId,
-        originalName: 'sample-watermarked-clip.mp4',
-        filePath: SAMPLE_PATH,
-        size: stat.size,
-        width: info.width,
-        height: info.height,
-        needsSarNormalize: info.needsSarNormalize,
-        rotation: info.rotation,
-        duration: info.duration,
-        fps: info.fps,
-        hasAudio: info.hasAudio,
-        createdAt: Date.now(),
-        isSample: true,
-      };
-      videos.set(videoId, stored);
-
-      const payload: VideoMetadata = {
-        videoId,
-        originalName: stored.originalName,
-        size: stored.size,
-        width: stored.width,
-        height: stored.height,
-        duration: stored.duration,
-        fps: stored.fps,
-        hasAudio: stored.hasAudio,
-        previewUrl: `/api/videos/${videoId}/stream`,
-        isSample: true,
-        suggestedRegion: {
-          x: 902,
-          y: 612,
-          w: 334,
-          h: 68,
-          startTime: null,
-          endTime: null,
-        },
-      };
-      res.json(payload);
-    } catch (err) {
-      res.status(500).json({
-        error: err instanceof Error ? err.message : 'Failed to prepare sample video.',
-      });
-    }
-  });
-
   app.get('/api/videos/:videoId/stream', (req, res) => {
     const video = videos.get(req.params.videoId);
     if (!video) {
@@ -997,7 +1082,7 @@ async function startServer(): Promise<void> {
   app.delete('/api/videos/:videoId', (req, res) => {
     const video = videos.get(req.params.videoId);
     if (video && !isVideoProtected(video.videoId)) {
-      if (!video.isSample && fs.existsSync(video.filePath)) {
+      if (fs.existsSync(video.filePath)) {
         fs.unlink(video.filePath, () => {});
       }
       videos.delete(req.params.videoId);
@@ -1005,17 +1090,19 @@ async function startServer(): Promise<void> {
     res.json({ ok: true });
   });
 
-  app.post('/api/jobs', (req, res) => {
+  app.post('/api/jobs', async (req, res) => {
     if (!enforceRateLimit(jobSubmitLimiter, req, res, 'Too many processing requests from this IP.')) {
       return;
     }
 
-    const { videoId, regions, mode, upscale, detailEnhance } = req.body as {
+    const { videoId, regions, mode, upscale, detailEnhance, upscaleEngine, comfyUrl } = req.body as {
       videoId?: string;
       regions?: WatermarkRegion[];
       mode?: RemovalMode;
       upscale?: UpscalePreset;
       detailEnhance?: boolean;
+      upscaleEngine?: UpscaleEngine;
+      comfyUrl?: string;
     };
 
     const video = videoId ? videos.get(videoId) : undefined;
@@ -1070,6 +1157,35 @@ async function startServer(): Promise<void> {
       }
     );
 
+    const requestedAi = upscaleEngine === 'ai' && primaryGraph.upscaled;
+    let verifiedComfyOrigin: string | null = null;
+
+    if (requestedAi) {
+      if (video.size > AI_MAX_VIDEO_BYTES) {
+        res.status(400).json({
+          error: `AI GPU mode supports videos up to ${AI_MAX_VIDEO_MB} MB due to free tunnel limits. Use the CPU upscaler for larger files.`,
+        });
+        return;
+      }
+      if (video.duration > AI_MAX_DURATION_SEC) {
+        res.status(400).json({
+          error: `AI GPU mode supports clips up to ${AI_MAX_DURATION_SEC}s due to free tunnel limits. Use the CPU upscaler for longer videos.`,
+        });
+        return;
+      }
+      const gpuCheck = await checkComfySystemStats(typeof comfyUrl === 'string' ? comfyUrl : '');
+      if (!gpuCheck.ok || !gpuCheck.origin) {
+        res.status(503).json({
+          error: gpuCheck.error || 'Colab GPU connection check failed. Reconnect or use the CPU upscaler.',
+          aiUnavailable: true,
+        });
+        return;
+      }
+      verifiedComfyOrigin = gpuCheck.origin;
+    }
+
+    const activeEngine: UpscaleEngine = requestedAi ? 'ai' : 'cpu';
+
     const jobId = crypto.randomUUID();
     const outputPath = path.join(OUTPUT_DIR, `${jobId}.mp4`);
 
@@ -1083,6 +1199,7 @@ async function startServer(): Promise<void> {
       outputWidth: primaryGraph.outputWidth,
       outputHeight: primaryGraph.outputHeight,
       upscale: primaryGraph.upscaled ? upscalePreset : 'original',
+      upscaleEngine: activeEngine,
       regionsCount: clampedRegions.length,
       startedAt: Date.now(),
     };
@@ -1252,10 +1369,144 @@ async function startServer(): Promise<void> {
       },
       run: async () => {
         if (!fs.existsSync(video.filePath)) {
+          verifiedComfyOrigin = null;
           job.status = 'failed';
           job.error = 'Source video expired before processing started. Please upload again.';
           job.finishedAt = Date.now();
           return;
+        }
+
+        if (activeEngine === 'ai') {
+          const aiInputPath = path.join(OUTPUT_DIR, `${jobId}-ai-in.mp4`);
+          const aiRawOutPath = path.join(OUTPUT_DIR, `${jobId}-ai-raw.mp4`);
+          const comfyOrigin = verifiedComfyOrigin || '';
+          verifiedComfyOrigin = null;
+
+          try {
+            // Step 1: Pre-process watermark removal + normalize SAR/rotation + strip audio for lean tunnel upload
+            job.progress = 5;
+            const preGraph = buildAiPreprocessFilterGraph(
+              clampedRegions,
+              removalMode,
+              video.width,
+              video.height,
+              video.duration,
+              video.needsSarNormalize
+            );
+            await runProcess(FFMPEG_BIN, [
+              '-y',
+              '-i',
+              video.filePath,
+              '-filter_complex',
+              preGraph.filterComplex,
+              '-map',
+              preGraph.outputLabel,
+              '-an',
+              '-c:v',
+              'libx264',
+              '-preset',
+              'veryfast',
+              '-crf',
+              '15',
+              '-pix_fmt',
+              'yuv420p',
+              '-metadata:s:v:0',
+              'rotate=0',
+              '-avoid_negative_ts',
+              'make_zero',
+              '-movflags',
+              '+faststart',
+              aiInputPath,
+            ]);
+            job.progress = 12;
+
+            // Step 2: Run ComfyUI GPU workflow via SSRF-safe client (re-checks /system_stats)
+            await runComfyUpscaleJob({
+              comfyUrl: comfyOrigin,
+              inputVideoPath: aiInputPath,
+              outputVideoPath: aiRawOutPath,
+              targetWidth: primaryGraph.outputWidth,
+              targetHeight: primaryGraph.outputHeight,
+              frameRate: video.fps,
+              durationSec: video.duration,
+              onProgress: (pct) => {
+                job.progress = Math.max(job.progress, Math.min(91, pct));
+              },
+            });
+
+            // Step 3: Mux original audio back cleanly while preserving exact aspect ratio, rotation=0 & A/V sync
+            job.progress = 93;
+            const runMux = async (audioMode: 'auto' | 'aac' | 'none') => {
+              const muxArgs = ['-y', '-i', aiRawOutPath];
+              if (video.hasAudio && audioMode !== 'none') {
+                muxArgs.push('-i', video.filePath);
+              }
+              muxArgs.push('-map', '0:v:0', '-c:v', 'copy');
+              if (video.hasAudio && audioMode !== 'none') {
+                const canCopyAudio =
+                  audioMode === 'auto' && (video.audioCodec === 'aac' || video.audioCodec === 'mp3');
+                muxArgs.push('-map', '1:a:0?');
+                if (canCopyAudio) {
+                  muxArgs.push('-c:a', 'copy');
+                } else {
+                  muxArgs.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000');
+                }
+                muxArgs.push('-shortest');
+              }
+              muxArgs.push(
+                '-metadata:s:v:0',
+                'rotate=0',
+                '-avoid_negative_ts',
+                'make_zero',
+                '-movflags',
+                '+faststart',
+                outputPath
+              );
+              await runProcess(FFMPEG_BIN, muxArgs);
+            };
+
+            try {
+              await runMux('auto');
+            } catch {
+              if (video.hasAudio) {
+                try {
+                  await runMux('aac');
+                } catch {
+                  await runMux('none');
+                }
+              } else {
+                throw new Error('Failed to finalize upscaled MP4 container.');
+              }
+            }
+
+            if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+              throw new Error('Final AI upscaled output file was empty.');
+            }
+
+            job.finishedAt = Date.now();
+            job.status = 'completed';
+            job.progress = 100;
+            job.outputSize = fs.statSync(outputPath).size;
+            return;
+          } catch (aiErr) {
+            if (fs.existsSync(outputPath)) {
+              fs.unlink(outputPath, () => {});
+            }
+            job.finishedAt = Date.now();
+            job.status = 'failed';
+            job.fallbackAvailable = true;
+            job.error =
+              aiErr instanceof ComfyFallbackError
+                ? aiErr.message
+                : 'Colab GPU processing stopped. You can continue with the CPU upscaler.';
+            return;
+          } finally {
+            for (const tmp of [aiInputPath, aiRawOutPath]) {
+              if (fs.existsSync(tmp)) {
+                fs.unlink(tmp, () => {});
+              }
+            }
+          }
         }
 
         // Attempt 1: Full-quality neural pipeline + fast audio copy when AAC/MP3
@@ -1366,6 +1617,8 @@ async function startServer(): Promise<void> {
       outputWidth: job.outputWidth,
       outputHeight: job.outputHeight,
       upscale: job.upscale,
+      upscaleEngine: job.upscaleEngine,
+      fallbackAvailable: job.fallbackAvailable,
       regionsCount: job.regionsCount,
       processingMs: job.finishedAt ? job.finishedAt - job.startedAt : undefined,
     });
@@ -1394,6 +1647,349 @@ async function startServer(): Promise<void> {
     const suffix = suffixParts.length > 0 ? suffixParts.join('-') : 'processed';
     const downloadName = `${baseName}-${suffix}.mp4`;
     res.download(job.outputPath, downloadName);
+  });
+
+  app.post('/api/jobs/ai-init', async (req, res) => {
+    if (!enforceRateLimit(jobSubmitLimiter, req, res, 'Too many processing requests from this IP.')) {
+      return;
+    }
+
+    const clientIp = getClientIp(req);
+    const existingAiJobId = activeAiJobsByIp.get(clientIp);
+    if (existingAiJobId) {
+      const existing = jobs.get(existingAiJobId);
+      if (existing && (existing.status === 'processing' || existing.status === 'queued')) {
+        res.setHeader('Retry-After', '10');
+        res.status(429).json({
+          error: 'You already have an AI upscaling job running. Please wait or cancel it first.',
+        });
+        return;
+      }
+      activeAiJobsByIp.delete(clientIp);
+    }
+
+    const { videoId, regions, mode, upscale } = req.body as {
+      videoId?: string;
+      regions?: WatermarkRegion[];
+      mode?: RemovalMode;
+      upscale?: UpscalePreset;
+    };
+
+    const video = videoId ? videos.get(videoId) : undefined;
+    if (!video || !fs.existsSync(video.filePath)) {
+      res.status(404).json({ error: 'Uploaded video not found. Please upload again.' });
+      return;
+    }
+
+    const upscalePreset: UpscalePreset =
+      upscale === '1080p' || upscale === '2k' || upscale === '4k' ? upscale : 'original';
+
+    const limitCheck = checkAiVideoLimits(
+      {
+        width: video.width,
+        height: video.height,
+        duration: video.duration,
+        size: video.size,
+      },
+      AI_WEBGPU_LIMITS
+    );
+    if (!limitCheck.allowed) {
+      res.status(400).json({ error: limitCheck.reason || 'Video exceeds AI Upscaler limits.' });
+      return;
+    }
+
+    const rawRegions = Array.isArray(regions) ? regions : [];
+    const removalMode: RemovalMode =
+      mode === 'blur' || mode === 'pixelate' || mode === 'delogo' ? mode : 'delogo';
+    const clampedRegions = rawRegions.slice(0, 8).map((r) => clampRegion(r, video.width, video.height));
+    const graphCheck = buildFfmpegFilterGraph(
+      clampedRegions,
+      removalMode,
+      video.width,
+      video.height,
+      video.duration,
+      {
+        upscale: upscalePreset,
+        detailEnhance: false,
+        sarNormalize: video.needsSarNormalize,
+        useNnedi: false,
+      }
+    );
+
+    if (!graphCheck.upscaled) {
+      res.status(400).json({ error: 'Select an upscale target larger than the original video.' });
+      return;
+    }
+
+    const estimatedOutputBytes = Math.min(MAX_VIDEO_SIZE_BYTES, Math.max(4 * 1024 * 1024, video.size * 3));
+    if (!ensureStorageBudget(estimatedOutputBytes)) {
+      res.setHeader('Retry-After', '30');
+      res.status(503).json({
+        error: 'Server storage is temporarily busy with active exports. Please retry in a moment.',
+      });
+      return;
+    }
+
+    const jobId = crypto.randomUUID();
+    const outputPath = path.join(OUTPUT_DIR, `${jobId}.mp4`);
+    const needsPreprocess =
+      clampedRegions.length > 0 ||
+      video.needsSarNormalize ||
+      video.rotation !== 0 ||
+      getFileExtension(video.filePath) !== '.mp4';
+
+    if (needsPreprocess) {
+      const preparedPath = path.join(OUTPUT_DIR, `${jobId}-ai-src.mp4`);
+      try {
+        const preGraph = buildAiPreprocessFilterGraph(
+          clampedRegions,
+          removalMode,
+          video.width,
+          video.height,
+          video.duration,
+          video.needsSarNormalize
+        );
+        await runProcess(FFMPEG_BIN, [
+          '-y',
+          '-i',
+          video.filePath,
+          '-filter_complex',
+          preGraph.filterComplex,
+          '-map',
+          preGraph.outputLabel,
+          '-an',
+          '-c:v',
+          'libx264',
+          '-preset',
+          'veryfast',
+          '-crf',
+          '15',
+          '-pix_fmt',
+          'yuv420p',
+          '-metadata:s:v:0',
+          'rotate=0',
+          '-avoid_negative_ts',
+          'make_zero',
+          '-movflags',
+          '+faststart',
+          preparedPath,
+        ]);
+        aiTempSourcePaths.set(jobId, preparedPath);
+      } catch (prepErr) {
+        if (fs.existsSync(preparedPath)) {
+          fs.unlink(preparedPath, () => {});
+        }
+        res.status(500).json({
+          error:
+            prepErr instanceof Error
+              ? `Failed to prepare video for AI upscaling: ${prepErr.message.slice(0, 140)}`
+              : 'Failed to prepare video for AI upscaling.',
+        });
+        return;
+      }
+    }
+
+    const sourceForPts = aiTempSourcePaths.get(jobId) ?? video.filePath;
+    const frameTimestampsSec = await probeVideoFrameTimestamps(sourceForPts);
+
+    const job: JobRecord = {
+      jobId,
+      videoId: video.videoId,
+      originalName: video.originalName,
+      status: 'processing',
+      progress: 1,
+      outputPath,
+      outputWidth: graphCheck.outputWidth,
+      outputHeight: graphCheck.outputHeight,
+      upscale: upscalePreset,
+      upscaleEngine: 'ai',
+      regionsCount: clampedRegions.length,
+      startedAt: Date.now(),
+    };
+    jobs.set(jobId, job);
+    activeAiJobsByIp.set(clientIp, jobId);
+
+    res.status(201).json({
+      jobId,
+      sourceUrl: `/api/jobs/${jobId}/ai-source`,
+      sourceWidth: video.width,
+      sourceHeight: video.height,
+      targetWidth: graphCheck.outputWidth,
+      targetHeight: graphCheck.outputHeight,
+      fps: video.fps,
+      duration: video.duration,
+      frameTimestampsSec,
+    });
+  });
+
+  app.get('/api/jobs/:jobId/ai-source', (req, res) => {
+    const job = jobs.get(req.params.jobId);
+    if (!job || job.upscaleEngine !== 'ai') {
+      res.status(404).json({ error: 'AI source video not found.' });
+      return;
+    }
+    const preparedPath = aiTempSourcePaths.get(job.jobId);
+    if (preparedPath && fs.existsSync(preparedPath)) {
+      streamVideoFile(req, res, preparedPath);
+      return;
+    }
+    const video = videos.get(job.videoId);
+    if (!video || !fs.existsSync(video.filePath)) {
+      res.status(404).json({ error: 'Source video expired.' });
+      return;
+    }
+    streamVideoFile(req, res, video.filePath);
+  });
+
+  app.post('/api/jobs/:jobId/finalize-ai', (req, res) => {
+    upload.single('video')(req, res, async (err) => {
+      const jobId = req.params.jobId;
+      const cleanupTempFiles = () => {
+        if (req.file?.path && fs.existsSync(req.file.path)) {
+          fs.unlink(req.file.path, () => {});
+        }
+        const aiSrc = aiTempSourcePaths.get(jobId);
+        if (aiSrc && fs.existsSync(aiSrc)) {
+          fs.unlink(aiSrc, () => {});
+        }
+        aiTempSourcePaths.delete(jobId);
+        releaseAiIpLock(jobId);
+      };
+
+      if (err) {
+        cleanupTempFiles();
+        res.status(400).json({ error: err.message || 'Failed to upload AI upscaled frames.' });
+        return;
+      }
+
+      const job = jobs.get(jobId);
+      const video = job ? videos.get(job.videoId) : undefined;
+      if (!job || !video || !job.outputPath || !req.file) {
+        cleanupTempFiles();
+        res.status(404).json({ error: 'AI upscaling session expired or invalid.' });
+        return;
+      }
+
+      try {
+        const muxerCodec = (req.body as { codec?: string } | undefined)?.codec === 'vp9' ? 'vp9' : 'avc';
+        const runAiMux = async (audioMode: 'auto' | 'aac' | 'none') => {
+          const args: string[] = ['-y', '-i', req.file!.path];
+          if (video.hasAudio && fs.existsSync(video.filePath) && audioMode !== 'none') {
+            args.push('-i', video.filePath);
+          }
+
+          args.push('-map', '0:v:0');
+          if (muxerCodec === 'avc') {
+            args.push('-c:v', 'copy');
+          } else {
+            args.push(
+              '-c:v',
+              'libx264',
+              '-preset',
+              'veryfast',
+              '-crf',
+              '16',
+              '-pix_fmt',
+              'yuv420p'
+            );
+          }
+
+          if (video.hasAudio && fs.existsSync(video.filePath) && audioMode !== 'none') {
+            const canCopyAudio =
+              audioMode === 'auto' && (video.audioCodec === 'aac' || video.audioCodec === 'mp3');
+            args.push('-map', '1:a:0?');
+            if (canCopyAudio) {
+              args.push('-c:a', 'copy');
+            } else {
+              args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000');
+            }
+            args.push('-shortest');
+          }
+
+          args.push(
+            '-metadata:s:v:0',
+            'rotate=0',
+            '-avoid_negative_ts',
+            'make_zero',
+            '-movflags',
+            '+faststart',
+            job.outputPath!
+          );
+
+          await runProcess(FFMPEG_BIN, args);
+        };
+
+        try {
+          await runAiMux('auto');
+        } catch {
+          if (video.hasAudio) {
+            try {
+              await runAiMux('aac');
+            } catch {
+              await runAiMux('none');
+            }
+          } else {
+            throw new Error('Failed to finalize AI upscaled MP4 container.');
+          }
+        }
+
+        if (!fs.existsSync(job.outputPath) || fs.statSync(job.outputPath).size === 0) {
+          throw new Error('Finalized AI upscaled video file was empty.');
+        }
+
+        job.finishedAt = Date.now();
+        job.status = 'completed';
+        job.progress = 100;
+        job.outputSize = fs.statSync(job.outputPath).size;
+
+        res.json({
+          jobId: job.jobId,
+          status: job.status,
+          progress: job.progress,
+          outputUrl: `/api/jobs/${job.jobId}/stream`,
+          downloadUrl: `/api/jobs/${job.jobId}/download`,
+          outputSize: job.outputSize,
+          outputWidth: job.outputWidth,
+          outputHeight: job.outputHeight,
+          upscale: job.upscale,
+          upscaleEngine: job.upscaleEngine,
+          regionsCount: job.regionsCount,
+          processingMs: job.finishedAt - job.startedAt,
+        });
+      } catch (muxErr) {
+        if (job.outputPath && fs.existsSync(job.outputPath)) {
+          fs.unlink(job.outputPath, () => {});
+        }
+        job.finishedAt = Date.now();
+        job.status = 'failed';
+        job.fallbackAvailable = true;
+        job.error =
+          muxErr instanceof Error
+            ? `Failed to mux original audio: ${muxErr.message.slice(0, 140)}`
+            : 'Failed to finalize AI upscaled video.';
+        res.status(500).json({ error: job.error, fallbackAvailable: true });
+      } finally {
+        cleanupTempFiles();
+      }
+    });
+  });
+
+  app.post('/api/jobs/:jobId/cancel-ai', (req, res) => {
+    const jobId = req.params.jobId;
+    const job = jobs.get(jobId);
+    const aiSrc = aiTempSourcePaths.get(jobId);
+    if (aiSrc && fs.existsSync(aiSrc)) {
+      fs.unlink(aiSrc, () => {});
+    }
+    aiTempSourcePaths.delete(jobId);
+    releaseAiIpLock(jobId);
+    if (job && job.upscaleEngine === 'ai') {
+      if (job.outputPath && fs.existsSync(job.outputPath)) {
+        fs.unlink(job.outputPath, () => {});
+      }
+      jobs.delete(jobId);
+    }
+    res.json({ ok: true });
   });
 
   if (process.env.NODE_ENV !== 'production') {
@@ -1468,8 +2064,6 @@ async function startServer(): Promise<void> {
     console.log(
       `ClearFrame studio running on http://0.0.0.0:${PORT} (workers=${MAX_CONCURRENT_JOBS}, queueCap=${MAX_QUEUED_JOBS})`
     );
-    // Pre-warm sample video in background so "Try Sample Video" is instant
-    ensureSampleVideo().catch(() => {});
   });
   // Allow up to 30 minutes for large (up to 300 MB) uploads on slower connections
   server.requestTimeout = 30 * 60 * 1000;

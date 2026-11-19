@@ -12,6 +12,7 @@ export const SUPPORTED_VIDEO_EXTENSIONS = [
 
 export type RemovalMode = 'delogo' | 'blur' | 'pixelate';
 export type UpscalePreset = 'original' | '1080p' | '2k' | '4k';
+export type UpscaleEngine = 'cpu' | 'ai';
 
 export interface WatermarkRegion {
   id: string;
@@ -34,7 +35,6 @@ export interface VideoMetadata {
   fps: number;
   hasAudio: boolean;
   previewUrl: string;
-  isSample?: boolean;
   suggestedRegion?: Omit<WatermarkRegion, 'id' | 'label'>;
 }
 
@@ -50,6 +50,8 @@ export interface ProcessingJobStatus {
   outputWidth?: number;
   outputHeight?: number;
   upscale?: UpscalePreset;
+  upscaleEngine?: UpscaleEngine;
+  fallbackAvailable?: boolean;
   regionsCount?: number;
   processingMs?: number;
 }
@@ -468,5 +470,80 @@ export function buildFfmpegFilterGraph(
     outputWidth: targetDims.width,
     outputHeight: targetDims.height,
     upscaled: false,
+  };
+}
+
+export function buildAiPreprocessFilterGraph(
+  regions: WatermarkRegion[],
+  mode: RemovalMode,
+  videoWidth: number,
+  videoHeight: number,
+  duration?: number,
+  sarNormalize?: boolean
+): { filterComplex: string; outputLabel: string } {
+  const safeW = toEven(Math.max(2, videoWidth));
+  const safeH = toEven(Math.max(2, videoHeight));
+  const clamped = (regions ?? []).map((r) => clampRegion(r, safeW, safeH));
+  const steps: string[] = [];
+  let currentLabel = '0:v';
+
+  if (sarNormalize) {
+    steps.push(`[${currentLabel}]format=yuv420p,scale=${safeW}:${safeH}:flags=lanczos,setsar=1[v_norm]`);
+    currentLabel = 'v_norm';
+  } else {
+    steps.push(`[${currentLabel}]format=yuv420p,setsar=1[v_norm]`);
+    currentLabel = 'v_norm';
+  }
+
+  clamped.forEach((region, idx) => {
+    const nextLabel = `v_${idx + 1}`;
+    const enableClause = buildEnableClause(region.startTime, region.endTime, duration);
+
+    if (mode === 'delogo') {
+      const params = [
+        `x=${region.x}`,
+        `y=${region.y}`,
+        `w=${region.w}`,
+        `h=${region.h}`,
+        'show=0',
+      ];
+      if (enableClause) params.push(enableClause);
+      steps.push(`[${currentLabel}]delogo=${params.join(':')}[${nextLabel}]`);
+    } else if (mode === 'blur') {
+      const baseLabel = `base_${idx}`;
+      const srcLabel = `psrc_${idx}`;
+      const patchLabel = `patch_${idx}`;
+      const blurRadius = Math.max(6, Math.min(24, Math.round(Math.min(region.w, region.h) / 5)));
+      const overlayParams = [`x=${region.x}`, `y=${region.y}`];
+      if (enableClause) overlayParams.push(enableClause);
+
+      steps.push(`[${currentLabel}]split=2[${baseLabel}][${srcLabel}]`);
+      steps.push(
+        `[${srcLabel}]crop=${region.w}:${region.h}:${region.x}:${region.y},boxblur=luma_radius=${blurRadius}:luma_power=2:chroma_radius=${blurRadius}:chroma_power=2[${patchLabel}]`
+      );
+      steps.push(`[${baseLabel}][${patchLabel}]overlay=${overlayParams.join(':')}[${nextLabel}]`);
+    } else {
+      const baseLabel = `base_${idx}`;
+      const srcLabel = `psrc_${idx}`;
+      const patchLabel = `patch_${idx}`;
+      const blockW = Math.max(2, Math.round(region.w / 10));
+      const blockH = Math.max(2, Math.round(region.h / 10));
+      const overlayParams = [`x=${region.x}`, `y=${region.y}`];
+      if (enableClause) overlayParams.push(enableClause);
+
+      steps.push(`[${currentLabel}]split=2[${baseLabel}][${srcLabel}]`);
+      steps.push(
+        `[${srcLabel}]crop=${region.w}:${region.h}:${region.x}:${region.y},scale=${blockW}:${blockH}:flags=neighbor,scale=${region.w}:${region.h}:flags=neighbor[${patchLabel}]`
+      );
+      steps.push(`[${baseLabel}][${patchLabel}]overlay=${overlayParams.join(':')}[${nextLabel}]`);
+    }
+
+    currentLabel = nextLabel;
+  });
+
+  steps.push(`[${currentLabel}]setsar=1[vout]`);
+  return {
+    filterComplex: steps.join(';'),
+    outputLabel: '[vout]',
   };
 }

@@ -14,14 +14,67 @@ import {
   validateVideoFile,
   type ProcessingJobStatus,
   type RemovalMode,
+  type UpscaleEngine,
   type UpscalePreset,
   type VideoMetadata,
   type WatermarkRegion,
 } from './utils/watermark';
+import { validateComfyUrlFormat } from './utils/comfyUrlGuard';
+import {
+  DEFAULT_AI_CLIENT_LIMITS,
+  checkAiVideoLimits,
+  detectWebGpuSupport,
+  disposeWebGpuAiSession,
+  ensureWebGpuAiSession,
+  runBrowserWebGpuUpscale,
+  type AiClientLimits,
+  type AiProvider,
+  type WebGpuSupportResult,
+} from './utils/webgpuUpscaler';
+
+export interface AiConnectionState {
+  connected: boolean;
+  checking: boolean;
+  gpuName?: string;
+  vramGb?: number;
+  error?: string;
+}
+
+export interface AiLimits {
+  maxSizeMb: number;
+  maxDurationSec: number;
+}
+
+export interface AiModelState {
+  status: 'idle' | 'downloading' | 'ready' | 'error';
+  progress: number | null;
+  provider?: AiProvider;
+  modelName?: string;
+  error?: string;
+}
+
+export interface ClientAiProgressState {
+  active: boolean;
+  stage: string;
+  doneFrames: number;
+  totalFrames: number;
+  percent: number;
+  etaSeconds: number | null;
+  msPerFrame: number | null;
+  provider?: AiProvider;
+  modelName?: string;
+  jobId?: string;
+}
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeXhrRef = useRef<XMLHttpRequest | null>(null);
+  const aiAbortControllerRef = useRef<AbortController | null>(null);
+  const modelAbortControllerRef = useRef<AbortController | null>(null);
+
+  const [isAdminMode] = useState(
+    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('admin') === '1'
+  );
 
   const [video, setVideo] = useState<VideoMetadata | null>(null);
   const [removeWatermarkEnabled, setRemoveWatermarkEnabled] = useState(false);
@@ -29,6 +82,40 @@ export default function App() {
   const [mode, setMode] = useState<RemovalMode>('delogo');
   const [upscale, setUpscale] = useState<UpscalePreset>('original');
   const [detailEnhance, setDetailEnhance] = useState(true);
+  const [upscaleEngine, setUpscaleEngine] = useState<UpscaleEngine>('cpu');
+
+  // Client-side WebGPU AI state
+  const [webGpuSupport, setWebGpuSupport] = useState<WebGpuSupportResult & { checked: boolean }>({
+    checked: false,
+    supported: false,
+    reason: "Your browser/device doesn't support GPU AI upscaling. Using CPU mode.",
+  });
+  const [aiWebGpuLimits, setAiWebGpuLimits] = useState<AiClientLimits>(DEFAULT_AI_CLIENT_LIMITS);
+  const [aiModelState, setAiModelState] = useState<AiModelState>({
+    status: 'idle',
+    progress: 0,
+  });
+  const [clientAiProgress, setClientAiProgress] = useState<ClientAiProgressState>({
+    active: false,
+    stage: '',
+    doneFrames: 0,
+    totalFrames: 0,
+    percent: 0,
+    etaSeconds: null,
+    msPerFrame: null,
+  });
+
+  // Session-only Colab GPU tunnel state (admin ?admin=1 only, never persisted)
+  const [comfyUrlInput, setComfyUrlInput] = useState('');
+  const [connectedComfyUrl, setConnectedComfyUrl] = useState('');
+  const [aiConnection, setAiConnection] = useState<AiConnectionState>({
+    connected: false,
+    checking: false,
+  });
+  const [aiLimits, setAiLimits] = useState<AiLimits>({
+    maxSizeMb: 50,
+    maxDurationSec: 60,
+  });
 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -36,11 +123,51 @@ export default function App() {
   const [uploadTotalBytes, setUploadTotalBytes] = useState(0);
   const [uploadFileName, setUploadFileName] = useState('');
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isLoadingSample, setIsLoadingSample] = useState(false);
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<ProcessingJobStatus | null>(null);
   const [processError, setProcessError] = useState<string | null>(null);
+  const [processFallbackAvailable, setProcessFallbackAvailable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    detectWebGpuSupport()
+      .then((res) => {
+        if (active) {
+          setWebGpuSupport({ checked: true, ...res });
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setWebGpuSupport({
+            checked: true,
+            supported: false,
+            reason: "Your browser/device doesn't support GPU AI upscaling. Using CPU mode.",
+          });
+        }
+      });
+
+    fetch('/api/health')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { aiLimits?: AiLimits; aiWebGpuLimits?: AiClientLimits } | null) => {
+        if (!active || !data) return;
+        if (data.aiLimits?.maxSizeMb && data.aiLimits?.maxDurationSec) {
+          setAiLimits(data.aiLimits);
+        }
+        if (
+          data.aiWebGpuLimits?.maxDurationSec &&
+          data.aiWebGpuLimits?.maxHeight &&
+          data.aiWebGpuLimits?.maxSizeMb
+        ) {
+          setAiWebGpuLimits(data.aiWebGpuLimits);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const createDefaultRegion = (meta: VideoMetadata): WatermarkRegion => {
     const defaultW = Math.max(48, Math.round(meta.width * 0.22));
@@ -66,6 +193,9 @@ export default function App() {
     setJobId(null);
     setJob(null);
     setProcessError(null);
+    setProcessFallbackAvailable(false);
+    // Keep CPU as safe default whenever a new video is loaded
+    setUpscaleEngine('cpu');
 
     if (meta.suggestedRegion) {
       setRemoveWatermarkEnabled(true);
@@ -302,28 +432,342 @@ export default function App() {
     setUploadProgress(0);
   };
 
-  const handleTrySample = async () => {
-    setUploadError(null);
-    setIsLoadingSample(true);
+  const handleConnectColab = async () => {
+    const check = validateComfyUrlFormat(comfyUrlInput);
+    if (!check.valid || !check.origin) {
+      setConnectedComfyUrl('');
+      setUpscaleEngine('cpu');
+      setAiConnection({
+        connected: false,
+        checking: false,
+        error: check.error || 'Enter a valid HTTPS tunnel URL.',
+      });
+      return;
+    }
+
+    setAiConnection({ connected: false, checking: true });
     try {
-      const res = await fetch('/api/sample', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Could not load sample video.');
+      const res = await fetch('/api/ai/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comfyUrl: check.origin }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        gpuName?: string;
+        vramGb?: number;
+        error?: string;
+        limits?: AiLimits;
+      };
+      if (data.limits) {
+        setAiLimits(data.limits);
       }
-      initializeVideoWorkspace(data as VideoMetadata);
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Could not load sample video.');
-    } finally {
-      setIsLoadingSample(false);
+      if (!res.ok || !data.ok) {
+        setConnectedComfyUrl('');
+        setUpscaleEngine('cpu');
+        setAiConnection({
+          connected: false,
+          checking: false,
+          error: data.error || 'Could not verify a GPU on that Colab URL.',
+        });
+        return;
+      }
+
+      setComfyUrlInput(check.origin);
+      setConnectedComfyUrl(check.origin);
+      setAiConnection({
+        connected: true,
+        checking: false,
+        gpuName: data.gpuName || 'NVIDIA GPU',
+        vramGb: data.vramGb,
+      });
+    } catch {
+      setConnectedComfyUrl('');
+      setUpscaleEngine('cpu');
+      setAiConnection({
+        connected: false,
+        checking: false,
+        error: 'Network error checking Colab URL.',
+      });
     }
   };
 
-  const handleStartProcessing = async () => {
+  const handleDisconnectColab = () => {
+    setConnectedComfyUrl('');
+    setComfyUrlInput('');
+    setUpscaleEngine('cpu');
+    setAiConnection({ connected: false, checking: false });
+  };
+
+  const handleSelectUpscaleEngine = async (nextEngine: UpscaleEngine) => {
+    setProcessError(null);
+    setProcessFallbackAvailable(false);
+    if (nextEngine === 'cpu') {
+      setUpscaleEngine('cpu');
+      return;
+    }
+
+    const useAdminColab = isAdminMode && aiConnection.connected && Boolean(connectedComfyUrl);
+    if (useAdminColab) {
+      setUpscaleEngine('ai');
+      return;
+    }
+
+    if (!webGpuSupport.supported) {
+      setUpscaleEngine('cpu');
+      return;
+    }
+
+    setUpscaleEngine('ai');
+    if (aiModelState.status === 'ready' || aiModelState.status === 'downloading') {
+      return;
+    }
+
+    const abortController = new AbortController();
+    modelAbortControllerRef.current = abortController;
+    setAiModelState({ status: 'downloading', progress: 0 });
+    try {
+      const sessionInfo = await ensureWebGpuAiSession(
+        (pct) => setAiModelState({ status: 'downloading', progress: pct }),
+        abortController.signal
+      );
+      if (!abortController.signal.aborted) {
+        setAiModelState({
+          status: 'ready',
+          progress: 100,
+          provider: sessionInfo.provider,
+          modelName: sessionInfo.modelName,
+        });
+      }
+    } catch (err) {
+      if (abortController.signal.aborted) return;
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Could not initialize AI model on WebGPU or WASM.';
+      setAiModelState({ status: 'error', progress: 0, error: msg });
+      setProcessError(msg);
+      setProcessFallbackAvailable(true);
+    } finally {
+      if (modelAbortControllerRef.current === abortController) {
+        modelAbortControllerRef.current = null;
+      }
+    }
+  };
+
+  const handleStartProcessing = async (overrideEngine?: UpscaleEngine) => {
     const activeRegions = removeWatermarkEnabled ? regions : [];
     if (!video || (activeRegions.length === 0 && upscale === 'original')) return;
-    setProcessError(null);
 
+    const useAdminColab = isAdminMode && aiConnection.connected && Boolean(connectedComfyUrl);
+    const effectiveEngine: UpscaleEngine =
+      overrideEngine === 'cpu'
+        ? 'cpu'
+        : upscaleEngine === 'ai' && upscale !== 'original' && (useAdminColab || webGpuSupport.supported)
+          ? 'ai'
+          : 'cpu';
+
+    setProcessError(null);
+    setProcessFallbackAvailable(false);
+
+    // Client-side 100% WebGPU/WASM AI upscaler path
+    if (effectiveEngine === 'ai' && !useAdminColab) {
+      const limitCheck = checkAiVideoLimits(video, aiWebGpuLimits);
+      if (!limitCheck.allowed) {
+        setProcessError(limitCheck.reason || 'Video exceeds AI Upscaler limits.');
+        setProcessFallbackAvailable(true);
+        return;
+      }
+
+      const abortController = new AbortController();
+      aiAbortControllerRef.current = abortController;
+      let aiJobId: string | null = null;
+
+      setClientAiProgress({
+        active: true,
+        stage: aiModelState.status === 'ready' ? 'Preparing AI frames...' : 'Loading AI model...',
+        doneFrames: 0,
+        totalFrames: 0,
+        percent: 1,
+        etaSeconds: null,
+        msPerFrame: null,
+        provider: aiModelState.provider,
+        modelName: aiModelState.modelName,
+      });
+
+      try {
+        setAiModelState((prev) =>
+          prev.status === 'ready' ? prev : { status: 'downloading', progress: prev.progress ?? null }
+        );
+        const sessionInfo = await ensureWebGpuAiSession((pct) => {
+          setAiModelState({ status: 'downloading', progress: pct });
+        }, abortController.signal);
+        setAiModelState({
+          status: 'ready',
+          progress: 100,
+          provider: sessionInfo.provider,
+          modelName: sessionInfo.modelName,
+        });
+
+        if (abortController.signal.aborted) {
+          throw new Error('Cancelled');
+        }
+
+        setClientAiProgress((prev) => ({
+          ...prev,
+          stage: 'Preparing source video...',
+          percent: 2,
+          provider: sessionInfo.provider,
+          modelName: sessionInfo.modelName,
+        }));
+
+        const initRes = await fetch('/api/jobs/ai-init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: abortController.signal,
+          body: JSON.stringify({
+            videoId: video.videoId,
+            regions: activeRegions,
+            mode,
+            upscale,
+          }),
+        });
+        const initData = (await initRes.json()) as {
+          jobId?: string;
+          sourceUrl?: string;
+          sourceWidth?: number;
+          sourceHeight?: number;
+          targetWidth?: number;
+          targetHeight?: number;
+          fps?: number;
+          duration?: number;
+          frameTimestampsSec?: number[];
+          error?: string;
+        };
+        if (
+          !initRes.ok ||
+          !initData.jobId ||
+          !initData.sourceUrl ||
+          !initData.targetWidth ||
+          !initData.targetHeight
+        ) {
+          throw new Error(initData.error || 'Could not initialize AI upscaling job.');
+        }
+
+        aiJobId = initData.jobId;
+        setClientAiProgress((prev) => ({
+          ...prev,
+          jobId: aiJobId ?? undefined,
+          stage: `AI Upscaling (${upscale.toUpperCase()})`,
+          percent: 3,
+        }));
+
+        const aiResult = await runBrowserWebGpuUpscale({
+          sourceUrl: initData.sourceUrl,
+          sourceWidth: initData.sourceWidth ?? video.width,
+          sourceHeight: initData.sourceHeight ?? video.height,
+          targetWidth: initData.targetWidth,
+          targetHeight: initData.targetHeight,
+          fps: initData.fps ?? video.fps,
+          duration: initData.duration ?? video.duration,
+          frameTimestampsSec: initData.frameTimestampsSec,
+          signal: abortController.signal,
+          onModelProgress: (pct) => {
+            setAiModelState((prev) =>
+              prev.status === 'ready' ? prev : { status: 'downloading', progress: pct }
+            );
+          },
+          onFrameProgress: ({ doneFrames, totalFrames, percent, etaSeconds, msPerFrame, provider, modelName }) => {
+            setClientAiProgress({
+              active: true,
+              jobId: aiJobId ?? undefined,
+              stage: `AI Upscaling (${upscale.toUpperCase()})`,
+              doneFrames,
+              totalFrames,
+              percent,
+              etaSeconds,
+              msPerFrame,
+              provider,
+              modelName,
+            });
+          },
+        });
+
+        if (abortController.signal.aborted) {
+          throw new Error('Cancelled');
+        }
+
+        setClientAiProgress((prev) => ({
+          ...prev,
+          stage: 'Muxing original audio...',
+          percent: 95,
+          etaSeconds: null,
+          provider: aiResult.provider,
+        }));
+
+        const formData = new FormData();
+        formData.append('video', new File([aiResult.blob], 'ai-upscaled.mp4', { type: 'video/mp4' }));
+        formData.append('codec', aiResult.muxerCodec);
+
+        const finRes = await fetch(`/api/jobs/${aiJobId}/finalize-ai`, {
+          method: 'POST',
+          signal: abortController.signal,
+          body: formData,
+        });
+        const finData = (await finRes.json()) as ProcessingJobStatus & { error?: string };
+        if (!finRes.ok || finData.status !== 'completed') {
+          throw new Error(finData.error || 'Failed to finalize AI upscaled MP4.');
+        }
+
+        setClientAiProgress({
+          active: false,
+          stage: '',
+          doneFrames: 0,
+          totalFrames: 0,
+          percent: 100,
+          etaSeconds: null,
+          msPerFrame: null,
+        });
+        setJobId(finData.jobId);
+        setJob(finData);
+      } catch (err) {
+        const wasAborted =
+          abortController.signal.aborted ||
+          (err instanceof Error && (err.name === 'AbortError' || err.message === 'Cancelled'));
+
+        if (aiJobId) {
+          fetch(`/api/jobs/${aiJobId}/cancel-ai`, { method: 'POST' }).catch(() => {});
+        }
+
+        setClientAiProgress({
+          active: false,
+          stage: '',
+          doneFrames: 0,
+          totalFrames: 0,
+          percent: 0,
+          etaSeconds: null,
+          msPerFrame: null,
+        });
+
+        if (!wasAborted) {
+          await disposeWebGpuAiSession();
+          const message =
+            err instanceof Error
+              ? err.message
+              : 'AI upscaling stopped unexpectedly. You can continue with the CPU upscaler.';
+          setAiModelState({ status: 'error', progress: 0, error: message });
+          setProcessError(message);
+          setProcessFallbackAvailable(true);
+        }
+      } finally {
+        if (aiAbortControllerRef.current === abortController) {
+          aiAbortControllerRef.current = null;
+        }
+      }
+      return;
+    }
+
+    // Standard CPU queue path (or Admin Colab GPU path when ?admin=1 + tunnel connected)
     try {
       const res = await fetch('/api/jobs', {
         method: 'POST',
@@ -334,10 +778,28 @@ export default function App() {
           mode,
           upscale,
           detailEnhance,
+          upscaleEngine: effectiveEngine,
+          comfyUrl: effectiveEngine === 'ai' && useAdminColab ? connectedComfyUrl : undefined,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const data = (await res.json()) as {
+        jobId?: string;
+        status?: 'queued' | 'processing';
+        queuePosition?: number;
+        error?: string;
+        aiUnavailable?: boolean;
+      };
+      if (!res.ok || !data.jobId) {
+        if (data.aiUnavailable) {
+          setConnectedComfyUrl('');
+          setUpscaleEngine('cpu');
+          setAiConnection({
+            connected: false,
+            checking: false,
+            error: data.error || 'Colab GPU tunnel is offline.',
+          });
+          setProcessFallbackAvailable(true);
+        }
         throw new Error(data.error || 'Failed to start video processing.');
       }
       setJobId(data.jobId);
@@ -345,11 +807,37 @@ export default function App() {
         jobId: data.jobId,
         status: data.status === 'queued' ? 'queued' : 'processing',
         progress: data.status === 'queued' ? 0 : 2,
+        upscaleEngine: effectiveEngine,
         queuePosition: typeof data.queuePosition === 'number' ? data.queuePosition : undefined,
       });
     } catch (err) {
       setProcessError(err instanceof Error ? err.message : 'Processing failed to start.');
     }
+  };
+
+  const handleCancelAiProcessing = () => {
+    const activeJobId = clientAiProgress.jobId;
+    aiAbortControllerRef.current?.abort();
+    aiAbortControllerRef.current = null;
+    if (activeJobId) {
+      fetch(`/api/jobs/${activeJobId}/cancel-ai`, { method: 'POST' }).catch(() => {});
+    }
+    setClientAiProgress({
+      active: false,
+      stage: '',
+      doneFrames: 0,
+      totalFrames: 0,
+      percent: 0,
+      etaSeconds: null,
+      msPerFrame: null,
+    });
+  };
+
+  const handleContinueWithCpu = () => {
+    setUpscaleEngine('cpu');
+    setProcessError(null);
+    setProcessFallbackAvailable(false);
+    void handleStartProcessing('cpu');
   };
 
   useEffect(() => {
@@ -367,6 +855,16 @@ export default function App() {
         setJob(data);
         if (data.status === 'failed') {
           setProcessError(data.error ?? 'Video processing failed.');
+          if (data.fallbackAvailable) {
+            setConnectedComfyUrl('');
+            setUpscaleEngine('cpu');
+            setAiConnection({
+              connected: false,
+              checking: false,
+              error: 'Colab tunnel disconnected.',
+            });
+            setProcessFallbackAvailable(true);
+          }
           setJobId(null);
         }
       } catch {
@@ -384,6 +882,9 @@ export default function App() {
   }, [jobId, job?.status]);
 
   const handleResetWorkspace = () => {
+    handleCancelAiProcessing();
+    modelAbortControllerRef.current?.abort();
+    modelAbortControllerRef.current = null;
     if (video) {
       fetch(`/api/videos/${video.videoId}`, { method: 'DELETE' }).catch(() => {});
     }
@@ -393,6 +894,7 @@ export default function App() {
     setJobId(null);
     setJob(null);
     setProcessError(null);
+    setProcessFallbackAvailable(false);
     setUploadError(null);
   };
 
@@ -404,7 +906,8 @@ export default function App() {
     }
   };
 
-  const isProcessing = Boolean(job && (job.status === 'processing' || job.status === 'queued'));
+  const isProcessing =
+    clientAiProgress.active || Boolean(job && (job.status === 'processing' || job.status === 'queued'));
   const isCompleted = Boolean(job && job.status === 'completed' && job.outputUrl);
 
   return (
@@ -442,10 +945,8 @@ export default function App() {
                 uploadLoadedBytes={uploadLoadedBytes}
                 uploadTotalBytes={uploadTotalBytes}
                 uploadFileName={uploadFileName}
-                isLoadingSample={isLoadingSample}
                 error={uploadError}
                 onFileSelected={handleFileSelected}
-                onTrySample={handleTrySample}
                 onCancelUpload={handleCancelUpload}
                 onDismissError={() => setUploadError(null)}
               />
@@ -461,16 +962,26 @@ export default function App() {
               >
                 <WatermarkEditor
                   video={video}
+                  isAdminMode={isAdminMode}
                   removeWatermarkEnabled={removeWatermarkEnabled}
                   regions={regions}
                   mode={mode}
                   upscale={upscale}
                   detailEnhance={detailEnhance}
+                  upscaleEngine={upscaleEngine}
+                  webGpuSupport={webGpuSupport}
+                  aiWebGpuLimits={aiWebGpuLimits}
+                  aiModelState={aiModelState}
+                  clientAiProgress={clientAiProgress}
+                  comfyUrlInput={comfyUrlInput}
+                  aiConnection={aiConnection}
+                  aiLimits={aiLimits}
                   isProcessing={isProcessing}
                   processStatus={job?.status}
                   queuePosition={job?.queuePosition}
-                  processProgress={job?.progress ?? 0}
+                  processProgress={clientAiProgress.active ? clientAiProgress.percent : (job?.progress ?? 0)}
                   processError={processError}
+                  processFallbackAvailable={processFallbackAvailable}
                   onRemoveWatermarkToggle={handleToggleRemoveWatermark}
                   onRegionsChange={(next) => {
                     if (next.length > 0 && !removeWatermarkEnabled) {
@@ -479,9 +990,20 @@ export default function App() {
                     setRegions(next);
                   }}
                   onModeChange={setMode}
-                  onUpscaleChange={setUpscale}
+                  onUpscaleChange={(nextUpscale) => {
+                    setUpscale(nextUpscale);
+                    if (nextUpscale === 'original') {
+                      setUpscaleEngine('cpu');
+                    }
+                  }}
                   onDetailEnhanceChange={setDetailEnhance}
-                  onStartProcessing={handleStartProcessing}
+                  onUpscaleEngineChange={(eng) => void handleSelectUpscaleEngine(eng)}
+                  onComfyUrlInputChange={setComfyUrlInput}
+                  onConnectColab={handleConnectColab}
+                  onDisconnectColab={handleDisconnectColab}
+                  onStartProcessing={() => handleStartProcessing()}
+                  onCancelProcessing={handleCancelAiProcessing}
+                  onContinueWithCpu={handleContinueWithCpu}
                   onChangeVideo={handleResetWorkspace}
                 />
               </Suspense>

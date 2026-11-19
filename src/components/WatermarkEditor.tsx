@@ -8,6 +8,10 @@ import {
   RotateCcw,
   AlertCircle,
   Loader2,
+  Cpu,
+  Sparkles,
+  Download,
+  X,
 } from 'lucide-react';
 import {
   clampRegion,
@@ -15,29 +19,57 @@ import {
   formatBytes,
   formatTimecode,
   type RemovalMode,
+  type UpscaleEngine,
   type UpscalePreset,
   type VideoMetadata,
   type WatermarkRegion,
 } from '../utils/watermark';
+import {
+  checkAiVideoLimits,
+  type AiClientLimits,
+  type WebGpuSupportResult,
+} from '../utils/webgpuUpscaler';
+import type {
+  AiConnectionState,
+  AiLimits,
+  AiModelState,
+  ClientAiProgressState,
+} from '../App';
 
 interface WatermarkEditorProps {
   video: VideoMetadata;
+  isAdminMode: boolean;
   removeWatermarkEnabled: boolean;
   regions: WatermarkRegion[];
   mode: RemovalMode;
   upscale: UpscalePreset;
   detailEnhance: boolean;
+  upscaleEngine: UpscaleEngine;
+  webGpuSupport: WebGpuSupportResult & { checked: boolean };
+  aiWebGpuLimits: AiClientLimits;
+  aiModelState: AiModelState;
+  clientAiProgress: ClientAiProgressState;
+  comfyUrlInput: string;
+  aiConnection: AiConnectionState;
+  aiLimits: AiLimits;
   isProcessing: boolean;
   processStatus?: 'queued' | 'processing' | 'completed' | 'failed';
   queuePosition?: number;
   processProgress: number;
   processError: string | null;
+  processFallbackAvailable: boolean;
   onRemoveWatermarkToggle: (enabled: boolean) => void;
   onRegionsChange: (regions: WatermarkRegion[]) => void;
   onModeChange: (mode: RemovalMode) => void;
   onUpscaleChange: (upscale: UpscalePreset) => void;
   onDetailEnhanceChange: (enabled: boolean) => void;
+  onUpscaleEngineChange: (engine: UpscaleEngine) => void;
+  onComfyUrlInputChange: (url: string) => void;
+  onConnectColab: () => void;
+  onDisconnectColab: () => void;
   onStartProcessing: () => void;
+  onCancelProcessing: () => void;
+  onContinueWithCpu: () => void;
   onChangeVideo: () => void;
 }
 
@@ -79,22 +111,38 @@ const UPSCALE_OPTIONS: Array<{ id: UpscalePreset; label: string }> = [
 
 export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
   video,
+  isAdminMode,
   removeWatermarkEnabled,
   regions,
   mode,
   upscale,
   detailEnhance,
+  upscaleEngine,
+  webGpuSupport,
+  aiWebGpuLimits,
+  aiModelState,
+  clientAiProgress,
+  comfyUrlInput,
+  aiConnection,
+  aiLimits,
   isProcessing,
   processStatus,
   queuePosition,
   processProgress,
   processError,
+  processFallbackAvailable,
   onRemoveWatermarkToggle,
   onRegionsChange,
   onModeChange,
   onUpscaleChange,
   onDetailEnhanceChange,
+  onUpscaleEngineChange,
+  onComfyUrlInputChange,
+  onConnectColab,
+  onDisconnectColab,
   onStartProcessing,
+  onCancelProcessing,
+  onContinueWithCpu,
   onChangeVideo,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -274,24 +322,54 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
   const activeRegionCount = removeWatermarkEnabled ? regions.length : 0;
   const canProcess = activeRegionCount > 0 || targetDims.upscaled;
 
+  const useAdminColab = isAdminMode && aiConnection.connected;
+  const colabWithinLimits =
+    video.size <= aiLimits.maxSizeMb * 1024 * 1024 && video.duration <= aiLimits.maxDurationSec;
+  const webGpuLimitCheck = checkAiVideoLimits(video, aiWebGpuLimits);
+
+  const canSelectAiEngine =
+    targetDims.upscaled && (useAdminColab ? colabWithinLimits : webGpuSupport.supported);
+  const effectiveEngine: UpscaleEngine = canSelectAiEngine && upscaleEngine === 'ai' ? 'ai' : 'cpu';
+  const aiBlockedByLimits = effectiveEngine === 'ai' && !useAdminColab && !webGpuLimitCheck.allowed;
+
+  const aiTooltip = useAdminColab
+    ? !colabWithinLimits
+      ? `Colab tunnel supports up to ${aiLimits.maxSizeMb} MB / ${aiLimits.maxDurationSec}s`
+      : 'Use RealESRGAN on your connected Colab GPU'
+    : webGpuSupport.supported
+      ? 'Use Real-ESRGAN AI super-resolution in your browser'
+      : "Your browser/device doesn't support GPU AI upscaling. Using CPU mode.";
+
   const actionLabel =
     activeRegionCount > 0 && targetDims.upscaled
       ? `Remove Watermark & Upscale (${upscale.toUpperCase()})`
       : activeRegionCount === 0 && targetDims.upscaled
-        ? `Upscale Video to ${upscale.toUpperCase()}`
+        ? effectiveEngine === 'ai'
+          ? `AI Upscale to ${upscale.toUpperCase()}`
+          : `Upscale Video to ${upscale.toUpperCase()}`
         : !removeWatermarkEnabled
           ? 'Select Upscale or Remove Watermark'
           : 'Remove Watermark';
 
-  const processingTitle =
-    activeRegionCount > 0 && targetDims.upscaled
+  const processingTitle = clientAiProgress.active
+    ? clientAiProgress.stage || `AI Upscaling to ${upscale.toUpperCase()}`
+    : activeRegionCount > 0 && targetDims.upscaled
       ? `Removing watermark & upscaling to ${upscale.toUpperCase()}`
       : activeRegionCount === 0 && targetDims.upscaled
-        ? `Upscaling video to ${upscale.toUpperCase()}`
+        ? effectiveEngine === 'ai'
+          ? `AI upscaling on GPU to ${upscale.toUpperCase()}`
+          : `Upscaling video to ${upscale.toUpperCase()}`
         : 'Removing watermark from video';
 
   if (isProcessing) {
-    const isQueued = processStatus === 'queued';
+    const isQueued = !clientAiProgress.active && processStatus === 'queued';
+    const isIndeterminate =
+      clientAiProgress.active &&
+      aiModelState.status === 'downloading' &&
+      aiModelState.progress === null &&
+      clientAiProgress.totalFrames === 0;
+    const clampedProgress = Math.min(100, Math.max(0, processProgress));
+
     return (
       <div
         data-testid="processing-view"
@@ -316,26 +394,83 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
           <div className="space-y-2 text-left">
             <div className="flex items-center justify-between text-xs font-medium text-slate-300">
               <span className="font-mono tabular-nums">
-                {activeRegionCount > 0 ? `${activeMode.label} · ` : ''}
-                {targetDims.width}×{targetDims.height}
+                {clientAiProgress.active && clientAiProgress.totalFrames > 0
+                  ? `Frames ${clientAiProgress.doneFrames}/${clientAiProgress.totalFrames}${
+                      clientAiProgress.etaSeconds ? ` · ~${clientAiProgress.etaSeconds}s left` : ''
+                    }`
+                  : `${activeRegionCount > 0 ? `${activeMode.label} · ` : ''}${
+                      effectiveEngine === 'ai' && targetDims.upscaled ? 'AI GPU · ' : ''
+                    }${targetDims.width}×${targetDims.height}`}
               </span>
               <span className="font-mono text-sm font-semibold text-sky-400 tabular-nums">
-                {isQueued ? 'Waiting' : `${processProgress}%`}
+                {isQueued ? 'Waiting' : isIndeterminate ? 'Loading' : `${clampedProgress}%`}
               </span>
             </div>
             <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
-              <div
-                className="h-full bg-sky-500 transition-[width] duration-200 ease-out"
-                style={{ width: `${isQueued ? 4 : Math.max(4, processProgress)}%` }}
-              />
+              {isIndeterminate ? (
+                <div className="h-full w-2/5 animate-pulse rounded-full bg-sky-500" />
+              ) : (
+                <div
+                  className="h-full bg-sky-500 transition-[width] duration-200 ease-out"
+                  style={{ width: `${isQueued ? 0 : clampedProgress}%` }}
+                />
+              )}
             </div>
           </div>
+
+          {clientAiProgress.active && (
+            <p
+              data-testid="ai-status-line"
+              className="font-mono text-[11px] text-slate-300 tabular-nums"
+            >
+              {(clientAiProgress.provider || aiModelState.provider || 'webgpu').toUpperCase()}
+              {' · '}
+              {clientAiProgress.modelName || aiModelState.modelName || 'realesr-general-x4v3.onnx'}
+              {clientAiProgress.totalFrames > 0 && (
+                <>
+                  {' · '}
+                  {clientAiProgress.doneFrames}/{clientAiProgress.totalFrames} frames
+                </>
+              )}
+              {clientAiProgress.msPerFrame !== null && (
+                <>
+                  {' · '}
+                  {clientAiProgress.msPerFrame} ms/frame
+                </>
+              )}
+            </p>
+          )}
+
+          {clientAiProgress.active && aiModelState.status === 'downloading' && (
+            <p className="text-xs text-sky-300">
+              {aiModelState.progress === null
+                ? 'Downloading AI model (size unknown) — cached in browser after first run.'
+                : `Downloading AI model (${aiModelState.progress}%) — cached in browser after first run.`}
+            </p>
+          )}
 
           <p className="text-xs text-slate-400">
             {isQueued
               ? 'Waiting for an available processing slot. Your job will start automatically.'
-              : 'Encoding visually lossless frames and preserving original audio. Keep this tab open.'}
+              : clientAiProgress.active
+                ? clientAiProgress.provider === 'wasm'
+                  ? 'Running Real-ESRGAN (WASM fallback) tiles locally in your browser and muxing original audio.'
+                  : 'Running Real-ESRGAN WebGPU tiles locally in your browser and muxing original audio.'
+                : effectiveEngine === 'ai'
+                  ? 'Upscaling video frames on your connected Colab GPU and muxing original audio.'
+                  : 'Encoding visually lossless frames and preserving original audio. Keep this tab open.'}
           </p>
+
+          {clientAiProgress.active && (
+            <button
+              type="button"
+              onClick={onCancelProcessing}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800 hover:text-white cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              Cancel AI Upscale
+            </button>
+          )}
         </div>
       </div>
     );
@@ -601,20 +736,179 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
           </div>
 
           {targetDims.upscaled ? (
-            <label className="mt-2.5 flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={detailEnhance}
-                onChange={(e) => onDetailEnhanceChange(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 accent-sky-400 cursor-pointer"
-              />
-              <span>
-                Neural detail enhance (NNEDI3 + Adaptive Sharpen)
-              </span>
-            </label>
+            <div className="mt-3 space-y-3">
+              {/* Upscale Engine Selector: CPU (Built-in) default vs WebGPU AI Upscaler */}
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-[#0B1120] p-1">
+                <button
+                  type="button"
+                  onClick={() => onUpscaleEngineChange('cpu')}
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    effectiveEngine === 'cpu'
+                      ? 'bg-slate-800 text-sky-300'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Cpu className="h-3.5 w-3.5" aria-hidden="true" />
+                  CPU (Built-in)
+                </button>
+                <button
+                  type="button"
+                  disabled={!canSelectAiEngine}
+                  onClick={() => onUpscaleEngineChange('ai')}
+                  title={aiTooltip}
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                    effectiveEngine === 'ai'
+                      ? 'bg-slate-800 text-sky-300 cursor-pointer'
+                      : canSelectAiEngine
+                        ? 'text-slate-300 hover:text-slate-100 cursor-pointer'
+                        : 'text-slate-500 opacity-50 cursor-not-allowed'
+                  }`}
+                >
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                  AI Upscaler
+                </button>
+              </div>
+
+              {effectiveEngine === 'cpu' ? (
+                <label className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={detailEnhance}
+                    onChange={(e) => onDetailEnhanceChange(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 accent-sky-400 cursor-pointer"
+                  />
+                  <span>Neural detail enhance (NNEDI3 + Adaptive Sharpen)</span>
+                </label>
+              ) : useAdminColab ? (
+                <p className="text-[11px] text-sky-300/90">
+                  Using RealESRGAN on {aiConnection.gpuName || 'Colab GPU'} · Original audio &amp; aspect preserved.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {aiModelState.status === 'downloading' && (
+                    <div className="space-y-1.5 rounded-lg border border-sky-500/30 bg-sky-950/30 p-2.5">
+                      <div className="flex items-center justify-between text-[11px] text-sky-300">
+                        <span>
+                          {aiModelState.progress === null
+                            ? 'Downloading AI model (size unknown)...'
+                            : aiModelState.progress >= 100
+                              ? 'Initializing AI engine...'
+                              : 'Downloading AI model...'}
+                        </span>
+                        {aiModelState.progress !== null && (
+                          <span className="font-mono tabular-nums">{aiModelState.progress}%</span>
+                        )}
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                        {aiModelState.progress === null ? (
+                          <div className="h-full w-2/5 animate-pulse rounded-full bg-sky-400" />
+                        ) : (
+                          <div
+                            className="h-full bg-sky-400 transition-[width] duration-150"
+                            style={{ width: `${Math.min(100, Math.max(0, aiModelState.progress))}%` }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiModelState.status === 'ready' && (
+                    <p className="text-[11px] text-emerald-400">
+                      AI ready ({(aiModelState.provider || 'webgpu').toUpperCase()} ·{' '}
+                      {aiModelState.modelName || 'realesr-general-x4v3.onnx'}, cached) · Max{' '}
+                      {aiWebGpuLimits.maxDurationSec}s / {aiWebGpuLimits.maxHeight}p /{' '}
+                      {aiWebGpuLimits.maxSizeMb} MB
+                    </p>
+                  )}
+
+                  {aiModelState.status === 'error' && aiModelState.error && (
+                    <p className="text-[11px] text-amber-300">{aiModelState.error}</p>
+                  )}
+
+                  {aiBlockedByLimits && (
+                    <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-950/30 p-2.5 text-[11px] text-amber-200">
+                      <p>{webGpuLimitCheck.reason}</p>
+                      <button
+                        type="button"
+                        onClick={() => onUpscaleEngineChange('cpu')}
+                        className="w-full rounded-md border border-sky-500/40 bg-sky-500/15 px-2.5 py-1.5 text-xs font-semibold text-sky-300 hover:bg-sky-500/25 cursor-pointer"
+                      >
+                        Use CPU mode
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Admin-only Colab GPU Tunnel (?admin=1) — hidden from normal users */}
+              {isAdminMode && (
+                <div className="rounded-lg border border-slate-800 bg-[#0B1120]/80 p-2.5 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-semibold text-slate-300">Admin: Colab GPU Tunnel</span>
+                    <a
+                      href="/colab/ClearFrame_ComfyUI_Upscaler.ipynb"
+                      download="ClearFrame_ComfyUI_Upscaler.ipynb"
+                      className="inline-flex items-center gap-1 font-medium text-sky-400 hover:underline whitespace-nowrap"
+                    >
+                      <Download className="h-3 w-3" aria-hidden="true" />
+                      Colab .ipynb
+                    </a>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="url"
+                      value={comfyUrlInput}
+                      onChange={(e) => onComfyUrlInputChange(e.target.value)}
+                      disabled={aiConnection.checking || aiConnection.connected}
+                      placeholder="https://xxxx.trycloudflare.com"
+                      aria-label="Colab ComfyUI HTTPS tunnel URL"
+                      className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#0B1120] px-2.5 py-1.5 font-mono text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none disabled:opacity-70"
+                    />
+                    {aiConnection.connected ? (
+                      <button
+                        type="button"
+                        onClick={onDisconnectColab}
+                        className="shrink-0 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700 cursor-pointer"
+                      >
+                        Disconnect
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={onConnectColab}
+                        disabled={aiConnection.checking || !comfyUrlInput.trim()}
+                        className="shrink-0 rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-sky-300 hover:bg-slate-700 disabled:opacity-50 cursor-pointer"
+                      >
+                        {aiConnection.checking ? 'Checking...' : 'Connect'}
+                      </button>
+                    )}
+                  </div>
+
+                  {aiConnection.connected ? (
+                    <p className="text-[11px] text-emerald-400">
+                      GPU ready: {aiConnection.gpuName}
+                      {aiConnection.vramGb ? ` (${aiConnection.vramGb} GB)` : ''} · Max {aiLimits.maxSizeMb} MB / {aiLimits.maxDurationSec}s
+                    </p>
+                  ) : aiConnection.error ? (
+                    <p className="text-[11px] text-amber-300">{aiConnection.error}</p>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">
+                      Free T4 GPU via Colab · Max {aiLimits.maxSizeMb} MB / {aiLimits.maxDurationSec}s · Session only
+                    </p>
+                  )}
+
+                  {!colabWithinLimits && (
+                    <p className="text-[11px] text-amber-300">
+                      This clip exceeds AI tunnel limit ({aiLimits.maxSizeMb} MB / {aiLimits.maxDurationSec}s) — using CPU upscaler.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           ) : upscale !== 'original' ? (
             <p className="mt-2 text-xs text-slate-400">
-              Source is already {video.width}×{video.height}. Original resolution kept without downscaling.
+              Source is already {video.width}×{video.height} (at or above {upscale.toUpperCase()}). Original resolution kept without upscaling or re-encoding loss.
             </p>
           ) : (
             <p className="mt-2 text-xs text-slate-400">
@@ -734,17 +1028,28 @@ export const WatermarkEditor: React.FC<WatermarkEditorProps> = ({
         {processError && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-950/50 px-3 py-2.5 text-xs text-red-200"
+            className="space-y-2 rounded-lg border border-red-500/40 bg-red-950/50 px-3 py-2.5 text-xs text-red-200"
           >
-            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" aria-hidden="true" />
-            <span>{processError}</span>
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" aria-hidden="true" />
+              <span>{processError}</span>
+            </div>
+            {processFallbackAvailable && (
+              <button
+                type="button"
+                onClick={onContinueWithCpu}
+                className="w-full rounded-md border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-xs font-semibold text-sky-300 hover:bg-sky-500/25 cursor-pointer"
+              >
+                Continue with CPU Upscaler
+              </button>
+            )}
           </div>
         )}
 
         <button
           type="button"
           onClick={onStartProcessing}
-          disabled={!canProcess}
+          disabled={!canProcess || aiBlockedByLimits}
           className="flex w-full min-h-[44px] items-center justify-center gap-2 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap cursor-pointer"
         >
           <Eraser className="h-4 w-4 shrink-0" aria-hidden="true" />

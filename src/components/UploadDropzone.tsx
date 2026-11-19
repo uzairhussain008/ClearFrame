@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Film, AlertCircle, X } from 'lucide-react';
+import { Upload, AlertCircle, X } from 'lucide-react';
 import { MAX_VIDEO_SIZE_MB, formatBytes } from '../utils/watermark';
 
 interface UploadDropzoneProps {
@@ -9,10 +9,8 @@ interface UploadDropzoneProps {
   uploadLoadedBytes: number;
   uploadTotalBytes: number;
   uploadFileName: string;
-  isLoadingSample: boolean;
   error: string | null;
   onFileSelected: (file: File) => void;
-  onTrySample: () => void;
   onCancelUpload: () => void;
   onDismissError: () => void;
 }
@@ -24,10 +22,8 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   uploadLoadedBytes,
   uploadTotalBytes,
   uploadFileName,
-  isLoadingSample,
   error,
   onFileSelected,
-  onTrySample,
   onCancelUpload,
   onDismissError,
 }) => {
@@ -62,7 +58,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     dragDepthRef.current = 0;
     setIsDragging(false);
 
-    if (isUploading || isLoadingSample) return;
+    if (isUploading) return;
     const file = e.dataTransfer.files?.[0];
     if (file) {
       onFileSelected(file);
@@ -169,21 +165,10 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={isLoadingSample}
-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Upload className="h-4 w-4" aria-hidden="true" />
               Choose Video File
-            </button>
-
-            <button
-              type="button"
-              onClick={onTrySample}
-              disabled={isLoadingSample}
-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-100 transition-colors hover:border-slate-600 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Film className="h-4 w-4 text-sky-400" aria-hidden="true" />
-              {isLoadingSample ? 'Loading Sample...' : 'Try Sample Video'}
             </button>
           </div>
 
