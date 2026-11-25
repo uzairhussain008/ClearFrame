@@ -21,12 +21,8 @@ export interface LandingPageData {
   faqs: LandingPageFaq[];
 }
 
-export const DEFAULT_SITE_URL = 'https://clearframe.ai.studio';
+export const SITE_URL = 'https://clearframe.ai.studio';
 export const LAST_MODIFIED = '2026-11-25';
-
-export function getSiteUrl(): string {
-  return (process.env.APP_URL || DEFAULT_SITE_URL).replace(/\/$/, '');
-}
 
 export const LANDING_PAGES: Record<'/remove-video-watermark' | '/4k-video-upscaler', LandingPageData> = {
   '/remove-video-watermark': {
@@ -143,7 +139,7 @@ export function getLandingPageByPath(pathname: string): LandingPageData | null {
   return null;
 }
 
-export function buildSitemapXml(siteUrl: string = getSiteUrl(), lastMod: string = LAST_MODIFIED): string {
+export function buildSitemapXml(siteUrl: string = SITE_URL, lastMod: string = LAST_MODIFIED): string {
   const cleanBase = siteUrl.replace(/\/$/, '');
   const paths = ['/', '/remove-video-watermark', '/4k-video-upscaler'];
   const urlsXml = paths
@@ -156,7 +152,7 @@ export function buildSitemapXml(siteUrl: string = getSiteUrl(), lastMod: string 
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urlsXml}\n</urlset>\n`;
 }
 
-export function buildRobotsTxt(siteUrl: string = getSiteUrl()): string {
+export function buildRobotsTxt(siteUrl: string = SITE_URL): string {
   const cleanBase = siteUrl.replace(/\/$/, '');
   return ['User-agent: *', 'Allow: /', `Sitemap: ${cleanBase}/sitemap.xml`].join('\n') + '\n';
 }
@@ -264,7 +260,7 @@ export function renderLandingPageHtml(page: LandingPageData): string {
 export function injectLandingPageSeo(
   htmlTemplate: string,
   page: LandingPageData,
-  siteUrl: string = getSiteUrl()
+  siteUrl: string = SITE_URL
 ): string {
   const cleanBase = siteUrl.replace(/\/$/, '');
   const canonicalUrl = `${cleanBase}${page.path}`;

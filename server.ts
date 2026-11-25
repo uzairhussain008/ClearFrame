@@ -45,7 +45,7 @@ import {
   injectLandingPageSeo,
 } from './src/seo/landingPages.ts';
 
-const SITE_URL = (process.env.APP_URL || 'https://clearframe.ai.studio').replace(/\/$/, '');
+const SITE_URL = 'https://clearframe.ai.studio';
 const PORT = Number(process.env.PORT || 3000);
 const CPU_COUNT = Math.max(1, os.cpus().length);
 const TOTAL_MEM_MB = Math.max(512, Math.round(os.totalmem() / (1024 * 1024)));
@@ -749,16 +749,6 @@ async function startServer(): Promise<void> {
     });
   });
 
-  function getBaseUrl(req: express.Request): string {
-    const rawHost = (req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
-    if (rawHost) {
-      const rawProto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
-      const proto = rawHost.startsWith('localhost') || rawHost.startsWith('127.') ? 'http' : rawProto || 'https';
-      return `${proto}://${rawHost}`.replace(/\/$/, '');
-    }
-    return (process.env.APP_URL || 'https://clearframe.ai.studio').replace(/\/$/, '');
-  }
-
   app.get('/robots.txt', (_req, res) => {
     res.type('text/plain').send(buildRobotsTxt(SITE_URL));
   });
@@ -767,8 +757,8 @@ async function startServer(): Promise<void> {
     res.type('application/xml').send(buildSitemapXml(SITE_URL, LAST_MODIFIED));
   });
 
-  app.get('/llms.txt', (req, res) => {
-    const baseUrl = getBaseUrl(req);
+  app.get('/llms.txt', (_req, res) => {
+    const baseUrl = SITE_URL;
     res.type('text/markdown; charset=utf-8').send(
       [
         '# ClearFrame — Free Video Watermark Remover & 4K Upscaler',
@@ -800,14 +790,9 @@ async function startServer(): Promise<void> {
     );
   });
 
-  const handleArdManifest = (req: express.Request, res: express.Response) => {
-    const baseUrl = getBaseUrl(req);
-    let publisherHost = 'clearframe.ai.studio';
-    try {
-      publisherHost = new URL(baseUrl).hostname.toLowerCase().replace(/[^a-z0-9.-]/g, '') || publisherHost;
-    } catch {
-      // Fallback to default host
-    }
+  const handleArdManifest = (_req: express.Request, res: express.Response) => {
+    const baseUrl = SITE_URL;
+    const publisherHost = 'clearframe.ai.studio';
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.json({
       specVersion: '0.91',
@@ -2010,8 +1995,7 @@ async function startServer(): Promise<void> {
     });
     app.use((req, res, next) => {
       if ((req.method === 'GET' || req.method === 'HEAD') && (req.path === '/' || req.path === '/index.html')) {
-        const baseUrl = getBaseUrl(req);
-        res.setHeader('Link', `<${baseUrl}/.well-known/ard.json>; rel="ard"`);
+        res.setHeader('Link', `<${SITE_URL}/.well-known/ard.json>; rel="ard"`);
         res.setHeader('X-Robots-Tag', 'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1');
       }
       next();
@@ -2024,18 +2008,15 @@ async function startServer(): Promise<void> {
       ? fs.readFileSync(indexHtmlPath, 'utf-8')
       : '';
 
-    const sendLocalizedIndexHtml = (req: express.Request, res: express.Response) => {
-      const baseUrl = getBaseUrl(req);
+    const sendLocalizedIndexHtml = (_req: express.Request, res: express.Response) => {
       res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Link', `<${baseUrl}/.well-known/ard.json>; rel="ard"`);
+      res.setHeader('Link', `<${SITE_URL}/.well-known/ard.json>; rel="ard"`);
       res.setHeader(
         'X-Robots-Tag',
         'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1'
       );
       if (cachedIndexHtml) {
-        res
-          .type('text/html; charset=utf-8')
-          .send(cachedIndexHtml.replaceAll('https://clearframe.ai.studio', baseUrl));
+        res.type('text/html; charset=utf-8').send(cachedIndexHtml);
       } else {
         res.sendFile(indexHtmlPath);
       }

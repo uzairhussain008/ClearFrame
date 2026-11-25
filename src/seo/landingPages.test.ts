@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   LANDING_PAGES,
   LAST_MODIFIED,
+  SITE_URL,
   buildRobotsTxt,
   buildSitemapXml,
   countLandingPageWords,
@@ -12,24 +13,34 @@ import {
   injectLandingPageSeo,
 } from './landingPages';
 
-test('buildSitemapXml uses fixed SITE_URL, static LAST_MODIFIED, exact 3 URLs, and no changefreq/priority', () => {
-  const xml = buildSitemapXml('https://clearframe.ai.studio', LAST_MODIFIED);
-  assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
-  assert.ok(xml.includes('<loc>https://clearframe.ai.studio/</loc>'));
-  assert.ok(xml.includes('<loc>https://clearframe.ai.studio/remove-video-watermark</loc>'));
-  assert.ok(xml.includes('<loc>https://clearframe.ai.studio/4k-video-upscaler</loc>'));
-  assert.equal((xml.match(/<url>/g) || []).length, 3);
-  assert.equal((xml.match(new RegExp(`<lastmod>${LAST_MODIFIED}</lastmod>`, 'g')) || []).length, 3);
-  assert.equal(xml.includes('changefreq'), false);
-  assert.equal(xml.includes('priority'), false);
-});
-
-test('buildRobotsTxt includes User-agent, Allow, and Sitemap', () => {
-  const txt = buildRobotsTxt('https://clearframe.ai.studio');
-  assert.equal(
-    txt,
-    'User-agent: *\nAllow: /\nSitemap: https://clearframe.ai.studio/sitemap.xml\n'
-  );
+test('SITE_URL is hardcoded to https://clearframe.ai.studio and ignores process.env.APP_URL', () => {
+  const prevAppUrl = process.env.APP_URL;
+  process.env.APP_URL = 'https://clearframe-751876293904.asia-south1.run.app';
+  try {
+    assert.equal(SITE_URL, 'https://clearframe.ai.studio');
+    const xml = buildSitemapXml();
+    const robots = buildRobotsTxt();
+    assert.equal(xml.includes('run.app'), false);
+    assert.equal(robots.includes('run.app'), false);
+    assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
+    assert.ok(xml.includes('<loc>https://clearframe.ai.studio/</loc>'));
+    assert.ok(xml.includes('<loc>https://clearframe.ai.studio/remove-video-watermark</loc>'));
+    assert.ok(xml.includes('<loc>https://clearframe.ai.studio/4k-video-upscaler</loc>'));
+    assert.equal((xml.match(/<url>/g) || []).length, 3);
+    assert.equal((xml.match(new RegExp(`<lastmod>${LAST_MODIFIED}</lastmod>`, 'g')) || []).length, 3);
+    assert.equal(xml.includes('changefreq'), false);
+    assert.equal(xml.includes('priority'), false);
+    assert.equal(
+      robots,
+      'User-agent: *\nAllow: /\nSitemap: https://clearframe.ai.studio/sitemap.xml\n'
+    );
+  } finally {
+    if (prevAppUrl === undefined) {
+      delete process.env.APP_URL;
+    } else {
+      process.env.APP_URL = prevAppUrl;
+    }
+  }
 });
 
 test('both landing pages satisfy word count (300-500), FAQ count (4-5), unique meta, and required keywords/facts', () => {
@@ -55,18 +66,31 @@ test('both landing pages satisfy word count (300-500), FAQ count (4-5), unique m
   );
 });
 
-test('injectLandingPageSeo injects per-route title, meta, canonical, og:image, single H1, and CTA into index.html', () => {
-  const indexHtml = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
-  const page = getLandingPageByPath('/4k-video-upscaler');
-  assert.ok(page);
-  const rendered = injectLandingPageSeo(indexHtml, page, 'https://clearframe.ai.studio');
+test('injectLandingPageSeo injects hardcoded https://clearframe.ai.studio URLs and ignores APP_URL', () => {
+  const prevAppUrl = process.env.APP_URL;
+  process.env.APP_URL = 'https://clearframe-751876293904.asia-south1.run.app';
+  try {
+    const indexHtml = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+    for (const routePath of ['/remove-video-watermark', '/4k-video-upscaler'] as const) {
+      const page = getLandingPageByPath(routePath);
+      assert.ok(page);
+      const rendered = injectLandingPageSeo(indexHtml, page);
 
-  assert.ok(rendered.includes(`<title>${page.title}</title>`));
-  assert.ok(rendered.includes(`<meta name="description" content="${page.description}" />`));
-  assert.ok(rendered.includes('<link rel="canonical" href="https://clearframe.ai.studio/4k-video-upscaler" />'));
-  assert.ok(rendered.includes('<meta property="og:url" content="https://clearframe.ai.studio/4k-video-upscaler" />'));
-  assert.ok(rendered.includes('<meta property="og:image" content="https://clearframe.ai.studio/og-card.png" />'));
-  assert.equal((rendered.match(/<h1\b/g) || []).length, 1);
-  assert.ok(rendered.includes('href="/"'));
-  assert.ok(rendered.includes(page.h1));
+      assert.equal(rendered.includes('run.app'), false);
+      assert.ok(rendered.includes(`<title>${page.title}</title>`));
+      assert.ok(rendered.includes(`<meta name="description" content="${page.description}" />`));
+      assert.ok(rendered.includes(`<link rel="canonical" href="https://clearframe.ai.studio${routePath}" />`));
+      assert.ok(rendered.includes(`<meta property="og:url" content="https://clearframe.ai.studio${routePath}" />`));
+      assert.ok(rendered.includes('<meta property="og:image" content="https://clearframe.ai.studio/og-card.png" />'));
+      assert.equal((rendered.match(/<h1\b/g) || []).length, 1);
+      assert.ok(rendered.includes('href="/"'));
+      assert.ok(rendered.includes(page.h1));
+    }
+  } finally {
+    if (prevAppUrl === undefined) {
+      delete process.env.APP_URL;
+    } else {
+      process.env.APP_URL = prevAppUrl;
+    }
+  }
 });
