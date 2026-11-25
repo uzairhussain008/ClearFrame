@@ -145,7 +145,7 @@ export const Footer: React.FC = () => {
       <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="space-y-1.5">
           <a
-            href="#workspace"
+            href="/#workspace"
             aria-label="ClearFrame Top"
             className="inline-flex min-h-[44px] items-center rounded focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-600"
           >
@@ -157,16 +157,22 @@ export const Footer: React.FC = () => {
         </div>
 
         <nav aria-label="Footer navigation" className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm font-medium text-slate-700">
-          <a href="#workspace" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="/#workspace" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             Workspace
           </a>
-          <a href="#how-it-works" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="/remove-video-watermark" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            Remove Watermark
+          </a>
+          <a href="/4k-video-upscaler" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            4K Upscaler
+          </a>
+          <a href="/#how-it-works" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             How It Works
           </a>
-          <a href="#specs" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="/#specs" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             Specs
           </a>
-          <a href="#faq" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+          <a href="/#faq" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             FAQ
           </a>
           <span className="inline-flex min-h-[44px] items-center text-slate-500 whitespace-nowrap">© 2026 ClearFrame</span>

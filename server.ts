@@ -37,7 +37,15 @@ import {
   runComfyUpscaleJob,
 } from './src/utils/comfyServer.ts';
 import { checkAiVideoLimits, type AiClientLimits } from './src/utils/webgpuUpscaler.ts';
+import {
+  LAST_MODIFIED,
+  buildRobotsTxt,
+  buildSitemapXml,
+  getLandingPageByPath,
+  injectLandingPageSeo,
+} from './src/seo/landingPages.ts';
 
+const SITE_URL = (process.env.APP_URL || 'https://clearframe.ai.studio').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 3000);
 const CPU_COUNT = Math.max(1, os.cpus().length);
 const TOTAL_MEM_MB = Math.max(512, Math.round(os.totalmem() / (1024 * 1024)));
@@ -751,25 +759,12 @@ async function startServer(): Promise<void> {
     return (process.env.APP_URL || 'https://clearframe.ai.studio').replace(/\/$/, '');
   }
 
-  app.get('/robots.txt', (req, res) => {
-    const baseUrl = getBaseUrl(req);
-    res.type('text/plain').send(
-      [
-        'User-agent: *',
-        'Allow: /',
-        'Disallow: /api/',
-        '',
-        `Sitemap: ${baseUrl}/sitemap.xml`,
-      ].join('\n') + '\n'
-    );
+  app.get('/robots.txt', (_req, res) => {
+    res.type('text/plain').send(buildRobotsTxt(SITE_URL));
   });
 
-  app.get('/sitemap.xml', (req, res) => {
-    const baseUrl = getBaseUrl(req);
-    const today = new Date().toISOString().split('T')[0];
-    res.type('application/xml').send(
-      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${baseUrl}/</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n</urlset>\n`
-    );
+  app.get('/sitemap.xml', (_req, res) => {
+    res.type('application/xml').send(buildSitemapXml(SITE_URL, LAST_MODIFIED));
   });
 
   app.get('/llms.txt', (req, res) => {
@@ -1998,6 +1993,21 @@ async function startServer(): Promise<void> {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+    app.get(['/remove-video-watermark', '/4k-video-upscaler'], async (req, res, next) => {
+      const landingPage = getLandingPageByPath(req.path);
+      if (!landingPage) {
+        next();
+        return;
+      }
+      try {
+        const rawHtml = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+        const transformedHtml = await vite.transformIndexHtml(req.originalUrl, rawHtml);
+        const pageHtml = injectLandingPageSeo(transformedHtml, landingPage, SITE_URL);
+        res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').send(pageHtml);
+      } catch (err) {
+        next(err);
+      }
+    });
     app.use((req, res, next) => {
       if ((req.method === 'GET' || req.method === 'HEAD') && (req.path === '/' || req.path === '/index.html')) {
         const baseUrl = getBaseUrl(req);
@@ -2030,6 +2040,20 @@ async function startServer(): Promise<void> {
         res.sendFile(indexHtmlPath);
       }
     };
+
+    app.get(['/remove-video-watermark', '/4k-video-upscaler'], (req, res) => {
+      const landingPage = getLandingPageByPath(req.path);
+      if (!landingPage || !cachedIndexHtml) {
+        sendLocalizedIndexHtml(req, res);
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader(
+        'X-Robots-Tag',
+        'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1'
+      );
+      res.type('text/html; charset=utf-8').send(injectLandingPageSeo(cachedIndexHtml, landingPage, SITE_URL));
+    });
 
     app.get('/', sendLocalizedIndexHtml);
     app.get('/index.html', sendLocalizedIndexHtml);
