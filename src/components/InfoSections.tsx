@@ -166,6 +166,12 @@ export const Footer: React.FC = () => {
           <a href="/4k-video-upscaler" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             4K Upscaler
           </a>
+          <a href="/remove-photo-watermark" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            Photo Watermark
+          </a>
+          <a href="/photo-upscaler" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            Photo Upscaler
+          </a>
           <a href="/#how-it-works" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             How It Works
           </a>
@@ -174,6 +180,15 @@ export const Footer: React.FC = () => {
           </a>
           <a href="/#faq" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
             FAQ
+          </a>
+          <a href="/privacy.html" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            Privacy
+          </a>
+          <a href="/terms.html" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            Terms
+          </a>
+          <a href="/about.html" className="inline-flex min-h-[44px] items-center px-1 hover:text-slate-950 transition-colors whitespace-nowrap">
+            About
           </a>
           <span className="inline-flex min-h-[44px] items-center text-slate-500 whitespace-nowrap">© 2026 ClearFrame</span>
         </nav>

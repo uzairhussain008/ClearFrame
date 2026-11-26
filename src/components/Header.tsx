@@ -19,7 +19,7 @@ export const Header: React.FC<HeaderProps> = ({ onUploadClick }) => {
 
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-300"
+          className="hidden lg:flex items-center gap-5 text-sm font-medium text-slate-300"
         >
           <a
             href="#workspace"
@@ -28,16 +28,28 @@ export const Header: React.FC<HeaderProps> = ({ onUploadClick }) => {
             Workspace
           </a>
           <a
-            href="#how-it-works"
+            href="/remove-video-watermark"
             className="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0"
           >
-            How It Works
+            Video Watermark
           </a>
           <a
-            href="#specs"
+            href="/4k-video-upscaler"
             className="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0"
           >
-            Specs
+            4K Upscaler
+          </a>
+          <a
+            href="/remove-photo-watermark"
+            className="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0"
+          >
+            Photo Watermark
+          </a>
+          <a
+            href="/photo-upscaler"
+            className="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0"
+          >
+            Photo Upscaler
           </a>
           <a
             href="#faq"

@@ -18,10 +18,6 @@
       name="description"
       content="Remove video watermarks cleanly and upscale footage up to 4K for free. Supports MP4, MOV, WebM, and MKV up to 300 MB with no signup or export watermark."
     />
-    <meta
-      name="keywords"
-      content="free video watermark remover, remove watermark from video, 4k video upscaler free, 300mb video watermark remover, upscale video to 4k online, delogo video online"
-    />
     <link rel="canonical" href="https://clearframe.ai.studio/" />
     <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
     <link rel="alternate" type="text/markdown" title="ClearFrame LLM Summary" href="/llms.txt" />
@@ -65,64 +61,34 @@
         href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap"
       />
     </noscript>
-    <style>html,body{background-color:#0b1120;color:#f8fafc;margin:0}</style>
+    <style>
+      html,body{background-color:#0b1120;color:#f8fafc;margin:0}
+      .cf-static{font-family:"DM Sans",ui-sans-serif,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:32px 20px;line-height:1.6}
+      .cf-static h1,.cf-static h2,.cf-static h3{font-family:"Plus Jakarta Sans",ui-sans-serif,system-ui,sans-serif;color:#f8fafc}
+      .cf-static p,.cf-static li{color:#cbd5e1}
+      .cf-static a{color:#38bdf8;text-decoration:none}
+      .cf-static section{margin-top:32px;padding:24px;border:1px solid #1e293b;border-radius:12px;background:#111a2e}
+      .cf-static footer{margin-top:40px;padding-top:20px;border-top:1px solid #1e293b;display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between;font-size:14px}
+    </style>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@graph": [
           {
-            "@type": "Organization",
-            "@id": "https://clearframe.ai.studio/#organization",
-            "name": "ClearFrame",
-            "url": "https://clearframe.ai.studio/",
-            "logo": {
-              "@type": "ImageObject",
-              "url": "https://clearframe.ai.studio/apple-touch-icon.png",
-              "width": 180,
-              "height": 180
-            }
-          },
-          {
-            "@type": "WebSite",
-            "@id": "https://clearframe.ai.studio/#website",
-            "name": "ClearFrame",
-            "url": "https://clearframe.ai.studio/",
-            "description": "Free online video watermark remover and 4K upscaler up to 300 MB.",
-            "publisher": {
-              "@id": "https://clearframe.ai.studio/#organization"
-            }
-          },
-          {
-            "@type": "WebApplication",
+            "@type": "SoftwareApplication",
             "@id": "https://clearframe.ai.studio/#app",
-            "name": "ClearFrame — Free Video Watermark Remover & 4K Upscaler",
+            "name": "ClearFrame",
             "url": "https://clearframe.ai.studio/",
             "image": "https://clearframe.ai.studio/og-card.png",
             "applicationCategory": "MultimediaApplication",
-            "operatingSystem": "All",
-            "browserRequirements": "Requires modern web browser with HTML5 video support",
-            "softwareVersion": "1.0",
-            "isAccessibleForFree": true,
-            "isPartOf": {
-              "@id": "https://clearframe.ai.studio/#website"
-            },
-            "publisher": {
-              "@id": "https://clearframe.ai.studio/#organization"
-            },
-            "description": "Free online video watermark remover and up-to-4K UHD video upscaler supporting MP4, MOV, WebM, MKV, and AVI uploads up to 300 MB without sign-up or external APIs.",
-            "fileFormat": [
-              "video/mp4",
-              "video/quicktime",
-              "video/webm",
-              "video/x-matroska",
-              "video/x-msvideo"
-            ],
+            "operatingSystem": "Web",
+            "description": "Free online video watermark remover and 4K upscaler supporting MP4, MOV, WebM, and MKV videos up to 300 MB with no signup, no export watermark, and original audio preserved.",
             "featureList": [
               "Free video watermark removal up to 300 MB",
-              "Smart Inpaint (Delogo), Soft Blur, and Mosaic Mask modes",
-              "Up to 8 independent watermark selection regions with start and end timestamps",
-              "Aspect-ratio safe video upscaling to 1080p Full HD, 2K QHD, and 4K UHD using NNEDI3 neural reconstruction, Lanczos resampling, and Adaptive Sharpening",
-              "Original audio stream preservation and before/after split comparison"
+              "Supports MP4, MOV, WebM, and MKV formats",
+              "Smart Inpaint, Soft Blur, and Mosaic removal modes with timestamp ranges",
+              "Upscale videos to 1080p Full HD, 2K QHD, and 4K UHD",
+              "No signup, no export watermark, and original audio preserved"
             ],
             "offers": {
               "@type": "Offer",
@@ -131,72 +97,46 @@
             }
           },
           {
-            "@type": "HowTo",
-            "name": "How to remove video watermarks and upscale to 4K for free",
-            "description": "Upload any video up to 300 MB, mark watermark regions, optionally enable 4K upscaling, and download a clean MP4.",
-            "totalTime": "PT2M",
-            "step": [
-              {
-                "@type": "HowToStep",
-                "position": 1,
-                "name": "Upload up to 300 MB",
-                "text": "Drop MP4, MOV, WebM, MKV, or AVI files directly from your device with zero sign-up."
-              },
-              {
-                "@type": "HowToStep",
-                "position": 2,
-                "name": "Mark & choose up to 4K",
-                "text": "Draw boxes over logos or text overlays, and optionally upscale to 1080p, 2K, or 4K."
-              },
-              {
-                "@type": "HowToStep",
-                "position": 3,
-                "name": "Compare & download MP4",
-                "text": "Check Before/After frames with the split slider and save your clean video with audio."
-              }
-            ]
-          },
-          {
             "@type": "FAQPage",
             "mainEntity": [
               {
                 "@type": "Question",
-                "name": "Is ClearFrame completely free for videos up to 300 MB?",
+                "name": "Is ClearFrame free to use?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Yes. You can upload, remove watermarks, and upscale videos up to 300 MB to 4K completely free with no account, no credits, and no export watermark."
+                  "text": "Yes. ClearFrame is 100% free with no signup, no credits, and no export watermark added to your output video."
                 }
               },
               {
                 "@type": "Question",
-                "name": "Does upscaling to 4K degrade the original video quality?",
+                "name": "What is the maximum file size limit?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "No. ClearFrame uses NNEDI3 neural edge-directed reconstruction, deblocking, Lanczos resampling, and balanced adaptive sharpening with high-profile H.264 MP4 encoding (CRF 16–18), and never downscales if your source is already 4K or higher."
+                  "text": "You can upload video files up to 300 MB per job directly from your device."
                 }
               },
               {
                 "@type": "Question",
-                "name": "Which watermark removal method works best?",
+                "name": "Which video formats does ClearFrame support?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Smart Inpaint reconstructs pixels from surrounding edges for corner logos and static text, while Soft Blur and Mosaic work well over fast-moving or complex textured backgrounds."
+                  "text": "ClearFrame supports MP4, MOV, WebM, and MKV uploads and exports clean, widely compatible MP4 videos."
                 }
               },
               {
                 "@type": "Question",
-                "name": "Can I remove watermarks that appear only during certain seconds?",
+                "name": "Is the original audio kept after processing?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Yes. Each watermark box supports optional Start and End timestamps in seconds so removal only runs while the watermark is visible."
+                  "text": "Yes. ClearFrame preserves your original audio stream and keeps audio synchronized with the processed video."
                 }
               },
               {
                 "@type": "Question",
-                "name": "How long are uploaded videos stored?",
+                "name": "Can ClearFrame upscale videos to 4K?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Temporary uploaded and processed video files are automatically deleted after 15 minutes or immediately when you switch videos."
+                  "text": "Yes. You can upscale videos to 1080p Full HD, 2K QHD, or 4K UHD using the built-in CPU pipeline or WebGPU AI upscaling on supported browsers."
                 }
               }
             ]
@@ -207,7 +147,94 @@
     <script data-cfasync="false" src="https://afders.org/1/a460c74206a88817952cd051f76fe125"></script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="cf-static">
+        <header>
+          <a href="/"><strong>ClearFrame</strong></a>
+        </header>
+        <main>
+          <section>
+            <h1>Free Video Watermark Remover &amp; 4K Upscaler</h1>
+            <p>
+              ClearFrame helps you remove unwanted logos, text overlays, and corner watermarks or upscale footage up to 4K UHD directly online. It supports MP4, MOV, WebM, and MKV files up to 300 MB with no signup, no export watermark, and original audio preserved.
+            </p>
+          </section>
+          <section>
+            <h2>How It Works</h2>
+            <ol>
+              <li>Upload your MP4, MOV, WebM, or MKV video up to 300 MB from your device.</li>
+              <li>Choose watermark removal regions and optionally select 1080p, 2K, or 4K upscaling.</li>
+              <li>Preview the before and after comparison and download your clean MP4 with original audio kept.</li>
+            </ol>
+          </section>
+          <section>
+            <h2>Frequently Asked Questions</h2>
+            <h3>Is ClearFrame free to use?</h3>
+            <p>Yes. ClearFrame is 100% free with no signup, no credits, and no export watermark added to your output video.</p>
+            <h3>What is the maximum file size limit?</h3>
+            <p>You can upload video files up to 300 MB per job directly from your device.</p>
+            <h3>Which video formats does ClearFrame support?</h3>
+            <p>ClearFrame supports MP4, MOV, WebM, and MKV uploads and exports clean, widely compatible MP4 videos.</p>
+            <h3>Is the original audio kept after processing?</h3>
+            <p>Yes. ClearFrame preserves your original audio stream and keeps audio synchronized with the processed video.</p>
+            <h3>Can ClearFrame upscale videos to 4K?</h3>
+            <p>Yes. You can upscale videos to 1080p Full HD, 2K QHD, or 4K UHD using the built-in CPU pipeline or WebGPU AI upscaling on supported browsers.</p>
+          </section>
+        </main>
+        <footer>
+          <span>ClearFrame</span>
+          <nav aria-label="Footer links">
+            <a href="/privacy.html">Privacy</a> ·
+            <a href="/terms.html">Terms</a> ·
+            <a href="/about.html">About &amp; Contact</a>
+          </nav>
+        </footer>
+      </div>
+    </div>
+    <noscript>
+      <div class="cf-static">
+        <header>
+          <a href="/"><strong>ClearFrame</strong></a>
+        </header>
+        <main>
+          <section>
+            <p><strong>Free Video Watermark Remover &amp; 4K Upscaler</strong></p>
+            <p>
+              ClearFrame helps you remove unwanted logos, text overlays, and corner watermarks or upscale footage up to 4K UHD directly online. It supports MP4, MOV, WebM, and MKV files up to 300 MB with no signup, no export watermark, and original audio preserved.
+            </p>
+          </section>
+          <section>
+            <h2>How It Works</h2>
+            <ol>
+              <li>Upload your MP4, MOV, WebM, or MKV video up to 300 MB from your device.</li>
+              <li>Choose watermark removal regions and optionally select 1080p, 2K, or 4K upscaling.</li>
+              <li>Preview the before and after comparison and download your clean MP4 with original audio kept.</li>
+            </ol>
+          </section>
+          <section>
+            <h2>Frequently Asked Questions</h2>
+            <h3>Is ClearFrame free to use?</h3>
+            <p>Yes. ClearFrame is 100% free with no signup, no credits, and no export watermark added to your output video.</p>
+            <h3>What is the maximum file size limit?</h3>
+            <p>You can upload video files up to 300 MB per job directly from your device.</p>
+            <h3>Which video formats does ClearFrame support?</h3>
+            <p>ClearFrame supports MP4, MOV, WebM, and MKV uploads and exports clean, widely compatible MP4 videos.</p>
+            <h3>Is the original audio kept after processing?</h3>
+            <p>Yes. ClearFrame preserves your original audio stream and keeps audio synchronized with the processed video.</p>
+            <h3>Can ClearFrame upscale videos to 4K?</h3>
+            <p>Yes. You can upscale videos to 1080p Full HD, 2K QHD, or 4K UHD using the built-in CPU pipeline or WebGPU AI upscaling on supported browsers.</p>
+          </section>
+        </main>
+        <footer>
+          <span>ClearFrame</span>
+          <nav aria-label="Footer links">
+            <a href="/privacy.html">Privacy</a> ·
+            <a href="/terms.html">Terms</a> ·
+            <a href="/about.html">About &amp; Contact</a>
+          </nav>
+        </footer>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
     <script data-cfasync="false" src="https://bicea.org/14/c614296205b9dbbba4d9b9fb357d8dc4"></script>
   </body>

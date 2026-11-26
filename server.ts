@@ -44,6 +44,10 @@ import {
   getLandingPageByPath,
   injectLandingPageSeo,
 } from './src/seo/landingPages.ts';
+import {
+  getPhotoPageByPath,
+  injectPhotoPageSeo,
+} from './src/seo/photoPages.ts';
 
 const SITE_URL = 'https://clearframe.ai.studio';
 const PORT = Number(process.env.PORT || 3000);
@@ -749,15 +753,35 @@ async function startServer(): Promise<void> {
     });
   });
 
+  const readPublicOrDistFile = (filename: string): string | null => {
+    const candidates = [
+      path.resolve(process.cwd(), 'public', filename),
+      path.resolve(process.cwd(), 'dist', filename),
+    ];
+    for (const filePath of candidates) {
+      if (fs.existsSync(filePath)) {
+        return fs.readFileSync(filePath, 'utf-8');
+      }
+    }
+    return null;
+  };
+
   app.get('/robots.txt', (_req, res) => {
-    res.type('text/plain').send(buildRobotsTxt(SITE_URL));
+    const staticRobots = readPublicOrDistFile('robots.txt');
+    res.type('text/plain').send(staticRobots ?? buildRobotsTxt(SITE_URL));
   });
 
   app.get('/sitemap.xml', (_req, res) => {
-    res.type('application/xml').send(buildSitemapXml(SITE_URL, LAST_MODIFIED));
+    const staticSitemap = readPublicOrDistFile('sitemap.xml');
+    res.type('application/xml').send(staticSitemap ?? buildSitemapXml(SITE_URL, LAST_MODIFIED));
   });
 
   app.get('/llms.txt', (_req, res) => {
+    const staticLlms = readPublicOrDistFile('llms.txt');
+    if (staticLlms) {
+      res.type('text/markdown; charset=utf-8').send(staticLlms);
+      return;
+    }
     const baseUrl = SITE_URL;
     res.type('text/markdown; charset=utf-8').send(
       [
@@ -1993,6 +2017,21 @@ async function startServer(): Promise<void> {
         next(err);
       }
     });
+    app.get(['/remove-photo-watermark', '/photo-upscaler'], async (req, res, next) => {
+      const photoPage = getPhotoPageByPath(req.path);
+      if (!photoPage) {
+        next();
+        return;
+      }
+      try {
+        const rawHtml = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+        const transformedHtml = await vite.transformIndexHtml(req.originalUrl, rawHtml);
+        const pageHtml = injectPhotoPageSeo(transformedHtml, photoPage, SITE_URL);
+        res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').send(pageHtml);
+      } catch (err) {
+        next(err);
+      }
+    });
     app.use((req, res, next) => {
       if ((req.method === 'GET' || req.method === 'HEAD') && (req.path === '/' || req.path === '/index.html')) {
         res.setHeader('Link', `<${SITE_URL}/.well-known/ard.json>; rel="ard"`);
@@ -2034,6 +2073,20 @@ async function startServer(): Promise<void> {
         'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1'
       );
       res.type('text/html; charset=utf-8').send(injectLandingPageSeo(cachedIndexHtml, landingPage, SITE_URL));
+    });
+
+    app.get(['/remove-photo-watermark', '/photo-upscaler'], (req, res) => {
+      const photoPage = getPhotoPageByPath(req.path);
+      if (!photoPage || !cachedIndexHtml) {
+        sendLocalizedIndexHtml(req, res);
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader(
+        'X-Robots-Tag',
+        'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1'
+      );
+      res.type('text/html; charset=utf-8').send(injectPhotoPageSeo(cachedIndexHtml, photoPage, SITE_URL));
     });
 
     app.get('/', sendLocalizedIndexHtml);

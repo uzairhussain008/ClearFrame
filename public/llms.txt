@@ -1,0 +1,19 @@
+# ClearFrame — Free Video & Photo Watermark Remover and AI Upscaler
+
+> ClearFrame is a free, zero-signup media studio for removing watermarks from videos and photos and upscaling footage or images cleanly. Video tools support MP4, MOV, WebM, and MKV files up to 300 MB with original audio preserved. Photo tools process JPG, PNG, and WebP images up to 25 MB 100% locally in your browser without uploading files to any server.
+
+## Key Capabilities
+- **Video Watermark Remover:** Remove logos, text overlays, and corner watermarks using Smart Inpaint (delogo), Soft Blur, or Mosaic with optional per-region start/end timestamps (MP4, MOV, WebM, MKV up to 300 MB).
+- **4K Video Upscaler:** Upscale video to 1080p Full HD, 2K QHD, or 4K UHD via built-in CPU reconstruction (NNEDI3 + Lanczos + adaptive sharpening) or browser WebGPU AI upscaling on supported devices, keeping original audio.
+- **Photo Watermark Remover:** Paint a brush mask (adjustable size, undo, clear, zoom) or draw a rectangle selection over unwanted watermarks on JPG, PNG, or WebP photos up to 25 MB. Runs 100% locally in the browser using Telea inpainting and exports a clean full-resolution PNG with no watermark.
+- **Photo Upscaler:** Enlarge JPG, PNG, and WebP photos up to 25 MB by 2x or 4x (up to 8,000 px max side) 100% in the browser using WebGPU/WASM AI super-resolution with automatic Lanczos-3 fallback, before/after slider comparison, and PNG or JPG download.
+
+## Main Pages
+- [Home & Video Workspace](https://clearframe.ai.studio/): Upload videos up to 300 MB, remove watermarks, and upscale to 4K.
+- [Remove Video Watermark](https://clearframe.ai.studio/remove-video-watermark): Guide and workflow for removing video watermarks free online.
+- [4K Video Upscaler](https://clearframe.ai.studio/4k-video-upscaler): Guide and workflow for upscaling videos to 4K online free.
+- [Remove Photo Watermark](https://clearframe.ai.studio/remove-photo-watermark): Free 100% browser-based photo watermark remover using Telea inpainting for JPG, PNG, and WebP up to 25 MB.
+- [AI Photo Upscaler](https://clearframe.ai.studio/photo-upscaler): Free 2x and 4x browser-based photo upscaler using WebGPU/WASM AI with Lanczos fallback up to 8,000 px.
+- [Privacy Policy](https://clearframe.ai.studio/privacy.html): Honest explanation of video upload, 15-minute auto-deletion, and 100% local browser processing for photo tools.
+- [Terms of Use](https://clearframe.ai.studio/terms.html): Acceptable use policy requiring ownership or rights to processed videos and photos.
+- [About & Contact](https://clearframe.ai.studio/about.html): Overview of ClearFrame and support contact details.

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script async src="https://www.googletagmanager.com/gtm.js?id=GTM-5RPGZFWK"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0B1120" />
+    <title>Privacy Policy | ClearFrame</title>
+    <meta
+      name="description"
+      content="Read how ClearFrame handles uploaded and browser-processed videos, temporary 15-minute storage, analytics, and privacy."
+    />
+    <link rel="canonical" href="https://clearframe.ai.studio/privacy.html" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ClearFrame" />
+    <meta property="og:url" content="https://clearframe.ai.studio/privacy.html" />
+    <meta property="og:title" content="Privacy Policy | ClearFrame" />
+    <meta
+      property="og:description"
+      content="Read how ClearFrame handles uploaded and browser-processed videos, temporary 15-minute storage, analytics, and privacy."
+    />
+    <meta property="og:image" content="https://clearframe.ai.studio/og-card.png" />
+    <style>
+      body{margin:0;background:#0b1120;color:#f8fafc;font-family:"DM Sans",ui-sans-serif,system-ui,sans-serif;line-height:1.65}
+      a{color:#38bdf8;text-decoration:none}a:hover{text-decoration:underline}
+      .wrap{max-width:860px;margin:0 auto;padding:24px 20px 64px}
+      header{border-bottom:1px solid #1e293b;padding:16px 0;margin-bottom:32px;display:flex;justify-content:space-between;align-items:center}
+      .brand{font-weight:700;font-size:18px;color:#f8fafc}
+      .card{background:#111a2e;border:1px solid #1e293b;border-radius:12px;padding:28px;margin-top:20px}
+      h1{font-size:2rem;line-height:1.2;margin:0 0 12px}
+      h2{font-size:1.25rem;margin:24px 0 8px}
+      p,li{color:#cbd5e1}
+      footer{margin-top:48px;padding-top:20px;border-top:1px solid #1e293b;display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between;font-size:14px;color:#94a3b8}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <a class="brand" href="/">ClearFrame</a>
+        <nav aria-label="Primary">
+          <a href="/">Open Tool</a>
+        </nav>
+      </header>
+      <main>
+        <h1>Privacy Policy</h1>
+        <p>Effective date: November 26, 2026</p>
+
+        <section class="card">
+          <h2>How Your Videos and Photos Are Processed</h2>
+          <p>
+            ClearFrame processes media locally or temporarily on the server depending on the tool and mode you choose:
+          </p>
+          <ul>
+            <li>
+              <strong>Photo Watermark Remover &amp; Photo Upscaler (100% Browser Processing):</strong> Your photos (JPG, PNG, WebP up to 25 MB) are decoded, inpainted, or upscaled entirely inside your own browser using client-side JavaScript/WebGPU/WASM. If you enable optional HD photo watermark removal, the open-source LaMa ONNX model weights are downloaded directly to your browser and cached locally in browser storage. Photos are never uploaded to ClearFrame servers and never leave your device.
+            </li>
+            <li>
+              <strong>Uploaded Video Processing (Default CPU Mode):</strong> When you upload a video (up to 300 MB), the file is transferred to the ClearFrame server's temporary workspace so the server can read metadata, apply watermark removal filters, and run CPU upscaling before delivering your final MP4.
+            </li>
+            <li>
+              <strong>Browser WebGPU AI Video Mode:</strong> When you select the AI Upscaler option on a supported browser, video frame super-resolution runs locally inside your browser using WebGPU/WASM (and the AI model weights are cached locally in your browser storage). The upscaled video stream is then uploaded to the server briefly only to combine it with your original audio track into an MP4 file.
+            </li>
+          </ul>
+        </section>
+
+        <section class="card">
+          <h2>Temporary Retention &amp; Automatic Deletion</h2>
+          <p>
+            Photo files are never uploaded or retained on our servers. For uploaded videos, source files and processed MP4 outputs are kept only in temporary server storage while you edit, preview, and download. All temporary video files are automatically deleted after <strong>15 minutes</strong>, or immediately when you switch or reset videos. ClearFrame does not sell, publish, or use your uploaded media to train AI models.
+          </p>
+        </section>
+
+        <section class="card">
+          <h2>Analytics, Advertising &amp; Cookies</h2>
+          <p>
+            ClearFrame requires no account or signup and collects no personal registration details. The website uses Google Tag Manager to measure basic traffic and third-party ad networks to keep the service free. Those third-party scripts may set standard browser cookies or collect anonymous usage metrics under their own privacy policies.
+          </p>
+        </section>
+      </main>
+      <footer>
+        <span>© 2026 ClearFrame</span>
+        <nav aria-label="Footer">
+          <a href="/">Home</a> ·
+          <a href="/privacy.html">Privacy</a> ·
+          <a href="/terms.html">Terms</a> ·
+          <a href="/about.html">About &amp; Contact</a>
+        </nav>
+      </footer>
+    </div>
+  </body>
+</html>

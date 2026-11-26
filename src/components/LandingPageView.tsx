@@ -23,7 +23,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({ page }) => {
 
           <nav
             aria-label="Primary navigation"
-            className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-300"
+            className="hidden lg:flex items-center gap-6 text-sm font-medium text-slate-300"
           >
             <a
               href="/"
@@ -50,6 +50,18 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({ page }) => {
               }`}
             >
               4K Upscaler
+            </a>
+            <a
+              href="/remove-photo-watermark"
+              className="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0"
+            >
+              Photo Watermark
+            </a>
+            <a
+              href="/photo-upscaler"
+              className="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0"
+            >
+              Photo Upscaler
             </a>
           </nav>
 
