@@ -58,7 +58,7 @@ export const InfoSections: React.FC = () => {
   return (
     <div className="space-y-16 border-t border-slate-800/80 pt-14">
       {/* Minimal Breathable 3-Step Flow */}
-      <section id="how-it-works" aria-labelledby="how-it-works-heading" className="cv-auto scroll-mt-8">
+      <section id="how-it-works" aria-labelledby="how-it-works-heading" className="cv-auto scroll-mt-[88px]">
         <h2
           id="how-it-works-heading"
           className="font-display text-2xl font-bold tracking-tight text-slate-50"
@@ -86,7 +86,7 @@ export const InfoSections: React.FC = () => {
       </section>
 
       {/* Clean Minimal Specs */}
-      <section id="specs" aria-labelledby="specs-heading" className="cv-auto scroll-mt-8">
+      <section id="specs" aria-labelledby="specs-heading" className="cv-auto scroll-mt-[88px]">
         <h2
           id="specs-heading"
           className="font-display text-2xl font-bold tracking-tight text-slate-50"
@@ -111,7 +111,7 @@ export const InfoSections: React.FC = () => {
       </section>
 
       {/* AEO / GEO-Structured FAQ: native details keeps all answers crawlable in DOM */}
-      <section id="faq" aria-labelledby="faq-heading" className="cv-auto scroll-mt-8">
+      <section id="faq" aria-labelledby="faq-heading" className="cv-auto scroll-mt-[88px]">
         <h2
           id="faq-heading"
           className="font-display text-2xl font-bold tracking-tight text-slate-50"

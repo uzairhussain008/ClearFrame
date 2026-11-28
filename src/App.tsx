@@ -917,7 +917,7 @@ export default function App() {
 
       <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 py-10 sm:px-6 sm:py-12">
         {/* Hero Header */}
-        <section id="workspace" className="scroll-mt-6">
+        <section id="workspace" className="scroll-mt-[88px]">
           <div className="mx-auto max-w-3xl text-center">
             <h1
               className="font-display font-bold tracking-tight text-slate-50 text-center"

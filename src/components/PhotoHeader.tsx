@@ -51,12 +51,12 @@ export const PhotoHeader: React.FC<PhotoHeaderProps> = ({
   }, [mobileMenuOpen]);
 
   return (
-    <header ref={headerRef} className="relative w-full border-b border-slate-800/80 bg-[#0B1120]">
-      <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-3 xl:gap-6 px-4 py-4 sm:px-6">
+    <header ref={headerRef} className="sticky top-0 z-50 w-full border-b border-slate-800/80 bg-[#0B1120]">
+      <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between gap-3 xl:gap-6 px-4 py-4 sm:px-6">
         <a
           href="/"
           aria-label="ClearFrame Home"
-          className="rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-400 whitespace-nowrap shrink-0"
+          className="rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-400 whitespace-nowrap flex-shrink-0"
         >
           <ClearFrameLogo variant="dark" size="md" />
         </a>
@@ -98,11 +98,11 @@ export const PhotoHeader: React.FC<PhotoHeaderProps> = ({
           </a>
         </nav>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2.5 flex-shrink-0">
           <button
             type="button"
             onClick={onActionClick}
-            className="hidden sm:inline-flex min-h-[40px] items-center justify-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 whitespace-nowrap shrink-0 cursor-pointer"
+            className="hidden sm:inline-flex min-h-[40px] items-center justify-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 whitespace-nowrap flex-shrink-0 cursor-pointer"
           >
             {actionLabel}
           </button>
@@ -114,7 +114,7 @@ export const PhotoHeader: React.FC<PhotoHeaderProps> = ({
             aria-expanded={mobileMenuOpen}
             aria-controls="photo-mobile-menu"
             onClick={() => setMobileMenuOpen((prev) => !prev)}
-            className="xl:hidden inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-slate-500/80 bg-slate-800/90 text-slate-50 transition-colors hover:border-sky-400 hover:text-sky-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 shrink-0 cursor-pointer"
+            className="xl:hidden inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-500/80 bg-slate-800/90 text-slate-50 transition-colors hover:border-sky-400 hover:text-sky-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 flex-shrink-0 cursor-pointer"
           >
             {mobileMenuOpen ? (
               <X className="h-5 w-5" aria-hidden="true" />
@@ -129,7 +129,7 @@ export const PhotoHeader: React.FC<PhotoHeaderProps> = ({
         <nav
           id="photo-mobile-menu"
           aria-label="Mobile navigation"
-          className="xl:hidden border-t border-slate-800/80 bg-[#0B1120] px-4 py-3 sm:px-6"
+          className="xl:hidden max-h-[calc(100vh-4.5rem)] overflow-y-auto border-t border-slate-800/80 bg-[#0B1120] px-4 py-3 sm:px-6"
         >
           <div className="mx-auto flex max-w-[1200px] flex-col gap-1">
             {PHOTO_MOBILE_NAV_LINKS.map((item) => {
