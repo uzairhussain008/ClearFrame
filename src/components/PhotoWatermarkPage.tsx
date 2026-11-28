@@ -659,44 +659,56 @@ export const PhotoWatermarkPage: React.FC = () => {
           )}
 
           {!photo && (
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDragging(false);
-                const file = e.dataTransfer.files?.[0];
-                if (file) void handleFileSelected(file);
-              }}
-              className={`rounded-xl border transition-colors ${
-                isDragging
-                  ? 'border-sky-400 bg-sky-950/20'
-                  : 'border-slate-800 bg-[#111A2E] hover:border-slate-700'
-              } p-6 sm:p-10`}
-            >
-              <div className="flex min-h-[260px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700/80 px-4 py-10 text-center">
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-400">
-                  <ImagePlus className="h-6 w-6" aria-hidden="true" />
+            <>
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragging(true);
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) void handleFileSelected(file);
+                }}
+                className={`rounded-xl border transition-colors ${
+                  isDragging
+                    ? 'border-sky-400 bg-sky-950/20'
+                    : 'border-slate-800 bg-[#111A2E] hover:border-slate-700'
+                } p-6 sm:p-10`}
+              >
+                <div className="flex min-h-[260px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700/80 px-4 py-10 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-400">
+                    <ImagePlus className="h-6 w-6" aria-hidden="true" />
+                  </div>
+                  <h2 className="mt-4 font-display text-lg font-semibold text-slate-50">
+                    Drop your photo to clean
+                  </h2>
+                  <p className="mt-1.5 text-sm text-slate-400">
+                    Select JPG, PNG, or WebP files up to <span className="font-medium text-slate-200">{MAX_PHOTO_SIZE_MB} MB</span>. Nothing is uploaded.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-6 inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 cursor-pointer"
+                  >
+                    <Upload className="h-4 w-4" aria-hidden="true" />
+                    Choose Photo File
+                  </button>
                 </div>
-                <h2 className="mt-4 font-display text-lg font-semibold text-slate-50">
-                  Drop your photo to clean
-                </h2>
-                <p className="mt-1.5 text-sm text-slate-400">
-                  Select JPG, PNG, or WebP files up to <span className="font-medium text-slate-200">{MAX_PHOTO_SIZE_MB} MB</span>. Nothing is uploaded.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="mt-6 inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-sky-400 cursor-pointer"
-                >
-                  <Upload className="h-4 w-4" aria-hidden="true" />
-                  Choose Photo File
-                </button>
               </div>
-            </div>
+              <p className="mt-3 text-center text-xs text-slate-400 leading-relaxed">
+                Use this tool only on photos you own or have{' '}
+                <a
+                  href="/terms.html"
+                  className="text-slate-300 underline underline-offset-2 hover:text-sky-400 transition-colors"
+                >
+                  permission
+                </a>{' '}
+                to edit.
+              </p>
+            </>
           )}
 
           {photo && !resultUrl && (

@@ -21,6 +21,11 @@ import {
   getPhotoPageByPath,
   injectPhotoPageSeo,
 } from '../seo/photoPages';
+import {
+  LAMA_MODEL_SIZE_BYTES,
+  LAMA_MODEL_URL,
+  validateLamaModelBytes,
+} from './lamaInpaint';
 
 test('validatePhotoFile accepts JPG/PNG/WebP up to 25 MB and rejects oversized or invalid types', () => {
   assert.equal(validatePhotoFile({ name: 'pic.jpg', size: 1024, type: 'image/jpeg' }).valid, true);
@@ -257,4 +262,44 @@ test('photoPages SEO helpers produce unique raw HTML meta, single H1, 4 exact FA
       assert.ok(rendered.includes(href), `${page.path} missing ${href}`);
     }
   }
+});
+
+test('LAMA_MODEL_URL config and validateLamaModelBytes enforce expected file size and ONNX ModelProto format', () => {
+  assert.equal(
+    LAMA_MODEL_URL,
+    'https://huggingface.co/othytenk/lama-int4-int8/resolve/main/lama_int4_int8_r4.onnx'
+  );
+
+  // Reject wrong sizes immediately
+  assert.equal(validateLamaModelBytes(new Uint8Array(0)).valid, false);
+  assert.equal(validateLamaModelBytes(new Uint8Array(1024)).valid, false);
+  assert.equal(validateLamaModelBytes(new Uint8Array(LAMA_MODEL_SIZE_BYTES + 2_000_000)).valid, false);
+
+  // Valid size with HTML/JSON/corrupt bytes must be rejected
+  const htmlBytes = new Uint8Array(LAMA_MODEL_SIZE_BYTES);
+  htmlBytes.set(Buffer.from('<!doctype html><html>error</html>'));
+  assert.equal(validateLamaModelBytes(htmlBytes).valid, false);
+
+  const randomBadBytes = new Uint8Array(LAMA_MODEL_SIZE_BYTES);
+  randomBadBytes.fill(0xff);
+  assert.equal(validateLamaModelBytes(randomBadBytes).valid, false);
+
+  // Valid size with ONNX ModelProto protobuf header (ir_version=8, producer="pytorch")
+  const validOnnxBytes = new Uint8Array(LAMA_MODEL_SIZE_BYTES);
+  const header = [0x08, 0x08, 0x12, 0x07, 0x70, 0x79, 0x74, 0x6f, 0x72, 0x63, 0x68];
+  validOnnxBytes.set(header, 0);
+  assert.equal(validateLamaModelBytes(validOnnxBytes, 'application/octet-stream').valid, true);
+  assert.equal(validateLamaModelBytes(validOnnxBytes, 'text/html').valid, false);
+});
+
+test('photo watermark static HTML includes permission notice in #root and noscript without altering FAQs', () => {
+  const indexHtml = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+  const rendered = injectPhotoPageSeo(indexHtml, PHOTO_PAGES['/remove-photo-watermark']);
+  const matches = rendered.match(
+    /Use this tool only on photos you own or have <a href="\/terms\.html">permission<\/a> to edit\./g
+  );
+  assert.equal(matches?.length, 2, 'Expected notice once in #root and once in noscript');
+
+  const upscalerRendered = injectPhotoPageSeo(indexHtml, PHOTO_PAGES['/photo-upscaler']);
+  assert.equal(upscalerRendered.includes('Use this tool only on photos'), false);
 });

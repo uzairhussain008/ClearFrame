@@ -177,6 +177,17 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           </p>
         </div>
       )}
+
+      <p className="mt-3 text-center text-xs text-slate-400 leading-relaxed">
+        Use this tool only on videos you own or have{' '}
+        <a
+          href="/terms.html"
+          className="text-slate-300 underline underline-offset-2 hover:text-sky-400 transition-colors"
+        >
+          permission
+        </a>{' '}
+        to edit.
+      </p>
     </div>
   );
 };

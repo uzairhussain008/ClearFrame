@@ -58,7 +58,7 @@
           </p>
           <ul>
             <li>
-              <strong>Photo Watermark Remover &amp; Photo Upscaler (100% Browser Processing):</strong> Your photos (JPG, PNG, WebP up to 25 MB) are decoded, inpainted, or upscaled entirely inside your own browser using client-side JavaScript/WebGPU/WASM. If you enable optional HD photo watermark removal, the open-source LaMa ONNX model weights are downloaded directly to your browser and cached locally in browser storage. Photos are never uploaded to ClearFrame servers and never leave your device.
+              <strong>Photo Watermark Remover &amp; Photo Upscaler (100% Browser Processing):</strong> Your photos (JPG, PNG, WebP up to 25 MB) are decoded, inpainted, or upscaled entirely inside your own browser using client-side JavaScript/WebGPU/WASM. The first time HD Mode is used, your browser downloads the AI model file from huggingface.co (your photos are never uploaded). Photos are never uploaded to ClearFrame servers and never leave your device.
             </li>
             <li>
               <strong>Uploaded Video Processing (Default CPU Mode):</strong> When you upload a video (up to 300 MB), the file is transferred to the ClearFrame server's temporary workspace so the server can read metadata, apply watermark removal filters, and run CPU upscaling before delivering your final MP4.

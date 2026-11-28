@@ -181,7 +181,7 @@ function escapeHtml(text: string): string {
     .replaceAll("'", '&#39;');
 }
 
-export function renderLandingPageHtml(page: LandingPageData): string {
+export function renderLandingPageHtml(page: LandingPageData, useH1: boolean = true): string {
   const sectionsHtml = page.sections
     .map(
       (section) => `
@@ -206,13 +206,22 @@ export function renderLandingPageHtml(page: LandingPageData): string {
     )
     .join('');
 
+  const usageNoticeHtml =
+    page.path === '/remove-video-watermark'
+      ? `\n      <p class="mx-auto mt-3 max-w-2xl text-xs text-slate-400">Use this tool only on videos you own or have <a href="/terms.html" class="text-slate-300 underline underline-offset-2 hover:text-sky-400">permission</a> to edit.</p>`
+      : '';
+
+  const headingTag = useH1
+    ? `<h1 class="mt-3 font-display font-bold tracking-tight text-slate-50 text-center" style="font-size: clamp(2.2rem, 4.2vw, 3.25rem); line-height: 1.1;">${escapeHtml(page.h1)}</h1>`
+    : `<p class="mt-3 font-display font-bold tracking-tight text-slate-50 text-center"><strong>${escapeHtml(page.h1)}</strong></p>`;
+
   return `<div class="flex min-h-screen flex-col bg-[#0B1120] text-slate-50">
   <header class="border-b border-slate-800/80 bg-[#0B1120]">
     <div class="mx-auto flex max-w-[1200px] items-center justify-between gap-8 px-4 py-4 sm:px-6">
       <a href="/" aria-label="ClearFrame Home" class="inline-flex items-center gap-2.5 whitespace-nowrap shrink-0">
         <span class="font-display text-lg font-bold tracking-tight text-slate-50">ClearFrame</span>
       </a>
-      <nav aria-label="Primary navigation" class="hidden md:flex items-center gap-7 text-sm font-medium text-slate-300">
+      <nav aria-label="Primary navigation" class="hidden xl:flex items-center gap-7 text-sm font-medium text-slate-300">
         <a href="/" class="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0">Workspace</a>
         <a href="/remove-video-watermark" class="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0">Remove Watermark</a>
         <a href="/4k-video-upscaler" class="hover:text-sky-400 transition-colors whitespace-nowrap shrink-0">4K Upscaler</a>
@@ -225,8 +234,8 @@ export function renderLandingPageHtml(page: LandingPageData): string {
   <main class="mx-auto w-full max-w-[960px] flex-1 px-4 py-12 sm:px-6 sm:py-16">
     <section class="mx-auto max-w-3xl text-center">
       <p class="text-xs font-semibold uppercase tracking-wider text-sky-400">${escapeHtml(page.eyebrow)}</p>
-      <h1 class="mt-3 font-display font-bold tracking-tight text-slate-50 text-center" style="font-size: clamp(2.2rem, 4.2vw, 3.25rem); line-height: 1.1;">${escapeHtml(page.h1)}</h1>
-      <p class="mx-auto mt-4 max-w-2xl text-base sm:text-lg leading-relaxed text-slate-300">${escapeHtml(page.lead)}</p>
+      ${headingTag}
+      <p class="mx-auto mt-4 max-w-2xl text-base sm:text-lg leading-relaxed text-slate-300">${escapeHtml(page.lead)}</p>${usageNoticeHtml}
       <div class="mt-8 flex flex-wrap items-center justify-center gap-4">
         <a href="/" class="inline-flex min-h-[48px] items-center justify-center rounded-lg bg-sky-500 px-6 py-3 text-base font-semibold text-slate-950 transition-colors hover:bg-sky-400">${escapeHtml(page.ctaLabel)}</a>
       </div>
@@ -336,10 +345,15 @@ export function injectLandingPageSeo(
     /<script\s+type="application\/ld\+json">[\s\S]*?<\/script>/i,
     `<script type="application/ld+json">${jsonLd}</script>`
   );
-  html = html.replace(
-    /<div\s+id="root">\s*<\/div>/i,
-    `<div id="root">${renderLandingPageHtml(page)}</div>`
-  );
+  const staticReplacement = `<div id="root">${renderLandingPageHtml(page, true)}</div>\n    <noscript>${renderLandingPageHtml(page, false)}</noscript>`;
+  if (/<div\s+id="root">[\s\S]*?<\/noscript>\s*(?=<script\s+type="module")/i.test(html)) {
+    html = html.replace(
+      /<div\s+id="root">[\s\S]*?<\/noscript>\s*(?=<script\s+type="module")/i,
+      `${staticReplacement}\n    `
+    );
+  } else {
+    html = html.replace(/<div\s+id="root">[\s\S]*?<\/div>/i, staticReplacement);
+  }
 
   return html;
 }

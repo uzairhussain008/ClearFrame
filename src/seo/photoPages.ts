@@ -174,6 +174,11 @@ function renderPhotoStaticBody(page: PhotoPageData, useH1: boolean): string {
     )
     .join('');
 
+  const usageNoticeHtml =
+    page.path === '/remove-photo-watermark'
+      ? '\n      <p>Use this tool only on photos you own or have <a href="/terms.html">permission</a> to edit.</p>'
+      : '';
+
   return `<div class="cf-static">
   <header>
     <a href="/"><strong>ClearFrame</strong></a>
@@ -189,7 +194,7 @@ function renderPhotoStaticBody(page: PhotoPageData, useH1: boolean): string {
     <section>
       <p>${escapeHtml(page.eyebrow)}</p>
       ${headingTag}
-      <p>${escapeHtml(page.intro)}</p>
+      <p>${escapeHtml(page.intro)}</p>${usageNoticeHtml}
     </section>
     <section>
       <h2>How It Works</h2>
